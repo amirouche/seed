@@ -47,3 +47,34 @@ all patterns uniformly, including reverse + let-values unpacking at each step.
 
 The comparison is fair in the sense that both solve the same problem, but the
 Seed version is specialized while the Chez version is general-purpose.
+
+## Gremlin Pipeline: vau operative vs syntax-case macro
+
+The pipeline benchmark compiles a flat TinkerPop-style step list into nested
+loops.  Both Seed2 and Chez produce structurally identical code and run within
+~1.5% of each other.  The comparison is fair — same algorithm, same loop
+structure, same graph.
+
+### Where predicate evaluation
+
+The Seed2 pipeline has one residual runtime cost: `where` predicates
+(e.g., `(same-group? g a b)`) are still evaluated via `seed-eval` at runtime
+because the traversal variables `a`, `b`, `c` are bound dynamically by
+`(define env name (car items))` at each loop iteration.  They are in the
+runtime env alist, not as Chez locals.
+
+The Chez `syntax-case` version doesn't have this issue — `where` predicates
+are inlined directly at compile time because `syntax-case` has full access
+to the variable bindings through hygienic expansion.
+
+In practice this difference is negligible (~0.3s out of ~24s) because the
+predicates are simple function calls and `env-ref` lookup is fast (the
+binding is always at the head of the alist due to the `define env` ordering).
+
+### Definition complexity
+
+The Seed2 `process-pipeline` is 33 lines of ordinary Scheme code using
+`car`, `cdr`, `if`, `eval`.  The Chez `traverse-steps` is 30 lines of
+`syntax-case` macro code requiring `datum->syntax` for hygiene-breaking,
+literal keyword sets, and template splicing.  Both are manageable, but the
+vau version requires no macro expertise.
