@@ -3,7 +3,7 @@
 ## Abacus/Abacus2: Seed pmatch vs SRFI-241 match
 
 The abacus benchmarks compare Seed's runtime `pmatch` against Chez's
-SRFI-241 `match` macro. Seed is faster (~30% on abacus2), but the two
+SRFI-241 `match` macro. Seed is faster (~43% on abacus2), but the two
 implementations are not equivalent. The Seed pmatch is a minimal runtime
 matcher; SRFI-241 is a full compile-time macro system.
 
@@ -52,8 +52,8 @@ Seed version is specialized while the Chez version is general-purpose.
 
 The pipeline benchmark compiles a flat TinkerPop-style step list into nested
 loops.  Both Seed2 and Chez produce structurally identical code and run within
-~1.5% of each other.  The comparison is fair — same algorithm, same loop
-structure, same graph.
+~0.3% of each other (23.89s vs 23.85s at N=20000).  The comparison is fair —
+same algorithm, same loop structure, same graph.
 
 ### Where predicate evaluation
 
@@ -67,9 +67,16 @@ The Chez `syntax-case` version doesn't have this issue — `where` predicates
 are inlined directly at compile time because `syntax-case` has full access
 to the variable bindings through hygienic expansion.
 
-In practice this difference is negligible (~0.3s out of ~24s) because the
+In practice this difference is negligible (~0.04s out of ~24s) because the
 predicates are simple function calls and `env-ref` lookup is fast (the
 binding is always at the head of the alist due to the `define env` ordering).
+
+### Runtime codegen variant (.seed)
+
+The `.seed` version uses the compile-steps approach: a lambda builds nested
+loop S-expressions at runtime, then evals the result.  This adds a 7% penalty
+(25.63s vs 23.89s) from the extra seed-eval compilation pass.  The generated
+loop code is identical once compiled.
 
 ### Definition complexity
 

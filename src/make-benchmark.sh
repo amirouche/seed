@@ -12,7 +12,7 @@
 #   --gremlin-n=N          Gremlin graph vertices            (default: 20000)
 #   --gremlin-e=N          Gremlin edges per vertex          (default: 20)
 #   --iters=N              Repetitions per benchmark        (default: 1)
-#   --only=BENCH           Run only: nqueens, collatz, abacus, abacus2, gremlin, or all (default: all)
+#   --only=BENCH           Run only: nqueens, collatz, abacus, abacus2, gremlin, gremlin-pipeline, or all (default: all)
 #   --drivers=LIST         Drivers to run: all, seedink, seedink2, scheme, binink, binink-aot,
 #                          or comma-separated (default: all)
 #   --dev                  Enable dev mode (optimize-level 0, GC, profiling)
@@ -289,6 +289,16 @@ export SEED_GREMLIN_E="$GREMLIN_E"
   fi
   printf '(run-benchmark)\n'
 } > "$TMP/gr-chez.scm"
+
+{ printf '(import (chezscheme) (benchmarks gremlin gremlin-pipeline))\n'
+  cat benchmarks/base.body.scm
+  if [ "$DEV" = true ]; then
+    printf '(dev! #t)\n'
+  else
+    printf '(dev! #f)\n'
+  fi
+  printf '(run-benchmark)\n'
+} > "$TMP/grp-chez.scm"
 
 # ══════════════════════════════════════════════════════════════════════
 #  Run
@@ -633,13 +643,26 @@ if [ "$ONLY" = "all" ] || [ "$ONLY" = "abacus2" ]; then
 fi
 
 if [ "$ONLY" = "all" ] || [ "$ONLY" = "gremlin" ]; then
-  echo "── Gremlin — exercising (values news out) convention ──────────────"
+  echo "── Gremlin (fold) — gremlin-fold vau / syntax-rules ────────────────"
 
   for driver in "${SELECTED_DRIVERS[@]}"; do
     if [ "$driver" = "seedink2" ]; then
-      run_bench "Gremlin|scheme --script seedink2.scm gremlin.seed2" seedink2 "benchmarks/gremlin/gremlin.seed2" "$ITERS"
+      run_bench "Gremlin-fold|scheme --script seedink2.scm gremlin.seed2" seedink2 "benchmarks/gremlin/gremlin.seed2" "$ITERS"
     elif [ "$driver" = "scheme" ]; then
-      run_bench "Gremlin|scheme --script gremlin.scm" scheme "$TMP/gr-chez.scm" "$ITERS"
+      run_bench "Gremlin-fold|scheme --script gremlin.scm" scheme "$TMP/gr-chez.scm" "$ITERS"
+    fi
+  done
+  echo
+fi
+
+if [ "$ONLY" = "all" ] || [ "$ONLY" = "gremlin-pipeline" ]; then
+  echo "── Gremlin (pipeline) — flat TinkerPop-style DSL ───────────────────"
+
+  for driver in "${SELECTED_DRIVERS[@]}"; do
+    if [ "$driver" = "seedink2" ]; then
+      run_bench "Gremlin-pipe|scheme --script seedink2.scm gremlin-pipeline.seed2" seedink2 "benchmarks/gremlin/gremlin-pipeline.seed2" "$ITERS"
+    elif [ "$driver" = "scheme" ]; then
+      run_bench "Gremlin-pipe|scheme --script gremlin-pipeline.scm" scheme "$TMP/grp-chez.scm" "$ITERS"
     fi
   done
   echo
