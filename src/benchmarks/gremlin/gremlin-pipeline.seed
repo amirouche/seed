@@ -1,28 +1,9 @@
-;;; gremlin-pipeline.seed2 — TinkerPop-inspired Gremlin Traversal DSL
+;;; gremlin-pipeline.seed — TinkerPop-inspired Gremlin Traversal DSL (Seed1)
 ;;;
-;;; A graph traversal DSL inspired by Apache TinkerPop's Gremlin,
-;;; built with recursive vau operatives that unfold at compile time.
-;;;
-;;; TinkerPop Gremlin (Groovy):           Seed2 (vau):
-;;;
-;;;   g.V().as('a')                        (traverse g
-;;;    .out().as('b')                        (V)
-;;;    .filter{sameGroup(it,'a')}            (as a)
-;;;    .out().as('c')                        (out)
-;;;    .filter{sameGroup(it,'a')}            (as b)
-;;;    .filter{hasEdge(it.c, it.a)}          (where (same-group? g a b))
-;;;    .count()                              (out)
-;;;                                          (as c)
-;;;                                          (where (same-group? g a c))
-;;;                                          (where (edge? g c a))
-;;;                                          (count))
-;;;
-;;; process-pipeline is a recursive vau that handles one step at a
-;;; time.  The flat step list is a vau rest-arg — static (quot ...)
-;;; data.  car/cdr/null?/eq?/cons fold at compile time, and each
-;;; recursive (eval (cons 'process-pipeline rest) env) produces a
-;;; static quoted call that the specializer compiles inline.
-;;; No runtime code generation.  The compiler does all the work.
+;;; Seed1 translation of the Seed2 pipeline benchmark.
+;;; Uses a compile-steps function to build nested loops as S-expressions,
+;;; then evals the result.  Same triangle-counting algorithm as the
+;;; Seed2 and Chez versions.
 ;;;
 ;;; Steps:
 ;;;   (V)          — source: all vertices           [g.V()]
@@ -30,6 +11,57 @@
 ;;;   (out)        — flat-map outgoing edges        [.out()]
 ;;;   (where pred) — filter by predicate            [.filter{pred}]
 ;;;   (count)      — terminal: count traversers     [.count()]
+
+;; ============================================================
+;; Pipeline compiler: flat steps -> nested loops
+;; ============================================================
+
+(define loop-names '(loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7))
+
+(define compile-steps
+  (lambda (steps last-as stream depth)
+    (if (null? steps) '(+ acc 1)
+        (let ((step (car steps)) (rest (cdr steps)))
+          (let ((kw (car step)))
+
+            (if (eq? kw 'V)
+                (compile-steps rest last-as '(iota (length g)) depth)
+
+            (if (eq? kw 'as)
+                (let ((name (cadr step))
+                      (lsym (list-ref loop-names depth)))
+                  (let ((inner (compile-steps rest name #f (+ depth 1))))
+                    (list 'letrec
+                      (list (list lsym
+                        (list 'lambda '(items acc)
+                          (list 'if '(null? items) 'acc
+                            (list 'let (list (list name '(car items)))
+                              (list lsym '(cdr items) inner))))))
+                      (list lsym stream 'acc))))
+
+            (if (eq? kw 'out)
+                (compile-steps rest last-as (list 'out 'g last-as) depth)
+
+            (if (eq? kw 'where)
+                (let ((pred (cadr step)))
+                  (list 'if (list 'not pred) 'acc
+                    (compile-steps rest last-as stream depth)))
+
+            (if (eq? kw 'count)
+                '(+ acc 1)
+
+                (compile-steps rest last-as stream depth)))))))))))
+
+;; ============================================================
+;; traverse — the TinkerPop-inspired traversal vau
+;; ============================================================
+
+(define traverse
+  (vau (graph-expr . steps) env
+    (let ((g (eval graph-expr env)))
+      (let ((code (compile-steps steps #f #f 0)))
+        (let ((wrapped (list 'let '((acc 0)) code)))
+          (eval wrapped (cons (cons 'g g) env)))))))
 
 ;; ============================================================
 ;; Graph representation
@@ -81,61 +113,6 @@
 (define edge?
   (lambda (g from to)
     (if (memv to (graph-neighbors (graph-ref g from))) #t #f)))
-
-;; ============================================================
-;; process-pipeline — recursive step processor (vau, top-level)
-;; ============================================================
-;;
-;; Top-level so it's in the outer letrec ctx — the specializer can
-;; inline it when traverse's body folds (eval (cons 'process-pipeline
-;; rest) env) to (eval (quot (process-pipeline ...)) dyn-env).
-;;
-;; Free variables g, acc, stream, name resolve as direct Chez locals
-;; from traverse's let bindings (via compile-eval-body's ctx check).
-
-(define process-pipeline
-  (vau steps env
-    (if (null? steps) (+ acc 1)
-        (let ((step (car steps)) (rest (cdr steps)))
-          (let ((kw (car step)))
-
-            (if (eq? kw 'V)
-                (let ((stream (iota (length g))))
-                  (eval (cons 'process-pipeline rest) env))
-
-            (if (eq? kw 'as)
-                (let ((name (cadr step)))
-                  (letrec ((loop (lambda (items acc)
-                                   (if (null? items) acc
-                                       (begin
-                                         (define env name (car items))
-                                         (loop (cdr items)
-                                               (eval (cons 'process-pipeline rest) env)))))))
-                    (loop stream acc)))
-
-            (if (eq? kw 'out)
-                (let ((stream (out g (eval name env))))
-                  (eval (cons 'process-pipeline rest) env))
-
-            (if (eq? kw 'where)
-                (if (not (eval (cadr step) env))
-                    acc
-                    (eval (cons 'process-pipeline rest) env))
-
-            (if (eq? kw 'count)
-                (+ acc 1)
-
-                (eval (cons 'process-pipeline rest) env)))))))))))
-
-;; ============================================================
-;; traverse — the TinkerPop-inspired traversal vau
-;; ============================================================
-
-(define traverse
-  (vau (graph-expr . steps) env
-    (let ((g (eval graph-expr env)))
-      (let ((acc 0) (stream #f) (name #f))
-        (eval (cons 'process-pipeline steps) env)))))
 
 ;; ============================================================
 ;; Triangle counting — TinkerPop-style traversal

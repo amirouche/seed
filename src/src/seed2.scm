@@ -808,12 +808,22 @@
          [scope (map (lambda (v) (cons v 'local)) vars)]
          [parsed (parse body-sexp)]
          [annotated ((annotate scope) parsed)]
+         [body-ast (spec annotated '() #f ctx lenv ifuel)]
+         ;; After specialization, only generate env-lookups for variables
+         ;; that are still referenced.  Vau specialization may have consumed
+         ;; symbols as static data (e.g., step keywords in a pipeline DSL),
+         ;; eliminating the runtime reference.
+         [body-free (collect-free-vars body-ast)]
+         [live-vars (filter (lambda (v) (memq v body-free)) vars)]
+         ;; Variables already in ctx are Chez locals from the enclosing
+         ;; scope — reference them directly instead of env-ref lookup.
+         ;; Only generate env-ref let bindings for the rest.
+         [need-env-ref (filter (lambda (v) (not (assq v ctx))) live-vars)]
          [let-binds (map (lambda (v)
                            (list v `(call (var cdr free)
                                      ((call (var assq free)
                                         ((quot ,v) ,binds-ast))))))
-                         vars)]
-         [body-ast (spec annotated '() #f ctx lenv ifuel)])
+                         need-env-ref)])
     (if (null? let-binds) body-ast `(let ,let-binds ,body-ast))))
 
 (define (inline-lambda lam-ast arg-asts subst ep ctx lenv ifuel)
@@ -1139,8 +1149,13 @@
        ;; Other local → keep as-is
        [else ast])]
 
-    ;; Free variable — pass through
-    [(var ,n free) ast]
+    ;; Free variable — resolve const-value from ctx (folded let bindings),
+    ;; otherwise pass through
+    [(var ,n free)
+     (let ([e (assq n ctx)])
+       (if (and e (pair? (cdr e)) (eq? (cadr e) 'const-value))
+           (value->ast (caddr e))
+           ast))]
 
     ;; Static eval: (eval param-ref ep-ref) → compile the arg directly
     [(eval (var ,n local) (var ,e local))
@@ -1152,17 +1167,65 @@
                  (cadr v) v))
            `(eval (var ,n local) (dyn-env))))]       ;; fallback: dynamic eval
 
-    ;; General eval with ep — spec without lenv to preserve call structure
-    ;; (allows compile-eval-body rule to fire on subsequent passes)
+    ;; General eval with ep — spec the expr.  If the result is a static
+    ;; quoted call to a known binding in ctx, compile it inline:
+    ;;   - known vau → specialize the vau body directly
+    ;;   - known lambda/other → compile-eval-body (resolves free vars from ctx)
+    ;; The ctx here includes let-bound names from the enclosing scope, which
+    ;; would be lost if deferred to the fixpoint loop or seed-eval.
     [(eval ,expr (var ,e local))
      (guard (eq? e ep))
-     `(eval ,(spec expr subst ep ctx '() ifuel) (dyn-env))]
+     (let ([se (spec expr subst ep ctx '() ifuel)])
+       (if (and (> ifuel 0)
+                (pair? se) (eq? (car se) 'quot) (pair? (cadr se))
+                (symbol? (car (cadr se)))
+                (assq (car (cadr se)) ctx))
+           (let* ([form (cadr se)]
+                  [entry (assq (car form) ctx)])
+             (if (vau-info? (cdr entry))
+                 ;; Known vau → specialize directly
+                 (let* ([vname (car form)]
+                        [source-args (cdr form)]
+                        [info (cdr entry)]
+                        [vau-params (cadr info)]
+                        [vau-ep (caddr info)]
+                        [vau-body (cadddr info)]
+                        [arg-asts (map (lambda (f)
+                                         (let ([p (parse f)])
+                                           ((annotate '()) p)))
+                                       source-args)])
+                   (specialize vau-body vau-params arg-asts vau-ep ctx))
+                 ;; Known lambda/other → compile-eval-body
+                 (compile-eval-body (cadr se) '(dyn-env) '(dyn-env) ctx lenv ifuel)))
+           `(eval ,se (dyn-env))))]
 
     ;; Eval of make-let with static body → compile directly
     [(eval (call (var ,ml local) (,binds-ast (quot ,body-sexp))) (dyn-env))
      (guard (eq? ml 'make-let))
      (let ([binds* (spec binds-ast subst ep ctx lenv ifuel)])
        (compile-eval-body body-sexp binds* '(dyn-env) ctx lenv ifuel))]
+
+    ;; Eval of static quoted vau call → specialize directly.
+    ;; Fires during the fixpoint loop in specialize: rule 2 folds
+    ;; (eval (cons 'vau-name rest) env) to (eval (quot (vau-name ...)) (dyn-env)),
+    ;; then this rule inlines the vau on the next fixpoint iteration.
+    ;; Returns a specialized AST; codegen handles define-env/ctx extension normally.
+    [(eval (quot ,form) (dyn-env))
+     (guard (and (> ifuel 0)
+                 (pair? form) (symbol? (car form))
+                 (let ([e (assq (car form) ctx)])
+                   (and e (vau-info? (cdr e))))))
+     (let* ([vname (car form)]
+            [source-args (cdr form)]
+            [info (cdr (assq vname ctx))]
+            [vau-params (cadr info)]
+            [vau-ep (caddr info)]
+            [vau-body (cadddr info)]
+            [arg-asts (map (lambda (f)
+                             (let ([p (parse f)])
+                               ((annotate '()) p)))
+                           source-args)])
+       (specialize vau-body vau-params arg-asts vau-ep ctx))]
 
     ;; Eval with different env — spec expr without lenv to preserve call structure
     [(eval ,expr ,env-expr)
@@ -1195,7 +1258,7 @@
 
     ;; Let — specialize + propagate static bindings
     [(let ((,names ,vals) ...) ,body)
-     (let loop ([ns names] [vs vals] [sub subst] [kept '()])
+     (let loop ([ns names] [vs vals] [sub subst] [kept '()] [folded '()])
        (if (null? ns)
            ;; Remove subst entries shadowed by dynamic let bindings
            ;; Also remove entries whose substituted value references a rebound name
@@ -1212,16 +1275,24 @@
                                                      (pair? (cdr v*))
                                                      (memq (cadr v*) kept-names))))))
                                       sub))]
-                  [body* (spec body body-sub ep ctx lenv ifuel)])
+                  ;; Extend ctx: kept names as scheme-var (Chez locals),
+                  ;; folded names as const-value (eliminated let bindings
+                  ;; whose constant values nested specialize calls may need).
+                  [body-ctx (append
+                              (map (lambda (n) (cons n 'scheme-var)) kept-names)
+                              (map (lambda (f) (cons (car f) (list 'const-value (cdr f)))) folded)
+                              ctx)]
+                  [body* (spec body body-sub ep body-ctx lenv ifuel)])
              (if (null? kept)
                  body*                              ;; all bindings eliminated
                  `(let ,(reverse kept) ,body*)))
            (let ([v* (spec (car vs) sub ep ctx lenv ifuel)])
              (if (static-value? v*)
-                 ;; Static → fold into subst, drop binding
+                 ;; Static → fold into subst, drop binding, track in folded
                  (loop (cdr ns) (cdr vs)
                        (cons (cons (car ns) v*) sub)
-                       kept)
+                       kept
+                       (cons (cons (car ns) (static-value v*)) folded))
                  ;; Dynamic → copy-propagate local var aliases [y (var x local)]
                  (if (and (pair? v*) (eq? (car v*) 'var)
                           (pair? (cdr v*))
@@ -1229,15 +1300,28 @@
                      ;; Alias: substitute y → (var x local) in body, drop binding
                      ;; Use (alias ...) tag to bypass vau-operand quoting in var handler
                      (loop (cdr ns) (cdr vs)
-                           (cons (cons (car ns) (list 'alias v*)) sub) kept)
+                           (cons (cons (car ns) (list 'alias v*)) sub) kept folded)
                      (loop (cdr ns) (cdr vs) sub
-                           (cons (list (car ns) v*) kept)))))))]
+                           (cons (list (car ns) v*) kept) folded))))))]
 
     ;; Call to free (primitive) — specialize args + constant fold
     [(call (var ,n free) ,args)
      (let ([arg-asts (map (lambda (a) (spec a subst ep ctx lenv ifuel)) args)])
        (or (try-fold-call n arg-asts)
            `(call (var ,n free) ,arg-asts)))]
+
+    ;; Call to known vau in ctx → specialize at spec time
+    ;; (mirrors what codegen* does, but returns AST not Chez code)
+    [(call (var ,n local) ,args)
+     (guard (and (> ifuel 0)
+                 (not (assq n subst))
+                 (let ([e (assq n ctx)]) (and e (vau-info? (cdr e))))))
+     (let* ([arg-asts (map (lambda (a) (spec a subst ep ctx lenv ifuel)) args)]
+            [info (cdr (assq n ctx))]
+            [vau-params (cadr info)]
+            [vau-ep (caddr info)]
+            [vau-body (cadddr info)])
+       (specialize vau-body vau-params arg-asts vau-ep ctx))]
 
     ;; Call to local — specialize args + inline from lenv
     [(call (var ,n local) ,args)
@@ -1643,6 +1727,11 @@
     [(var ,n local) n]
     [(var ,n free)
      (cond
+       ;; Folded constant from enclosing let — emit the value directly
+       [(let ([e (assq n ctx)])
+          (and e (pair? (cdr e)) (eq? (cadr e) 'const-value)))
+        (let ([v (caddr (assq n ctx))])
+          (if (or (null? v) (string? v)) `',v v))]
        ;; Known in ctx (e.g., bound by call-with-values from define) → bare var
        [(assq n ctx) n]
        ;; In vau bodies with live ep, non-primitive free vars are looked up
@@ -1670,8 +1759,11 @@
     [(begin ,e ...) (codegen-begin e ctx)]
     [(lam ,p ,body) `(lambda ,p ,(codegen* body ctx))]
     [(let ((,names ,vals) ...) ,body)
-     `(let ,(map (lambda (n v) (list n (codegen* v ctx))) names vals)
-        ,(codegen* body ctx))]
+     ;; Extend ctx so that free-var references to let-bound names in the
+     ;; body compile as bare Chez references, not env-ref lookups.
+     (let ([body-ctx (append (map (lambda (n) (cons n 'scheme-var)) names) ctx)])
+       `(let ,(map (lambda (n v) (list n (codegen* v ctx))) names vals)
+          ,(codegen* body body-ctx)))]
 
     ;; Named-let: (letrec ([f (lam (a b) body)]) (call f (x y))) → (let f ([a x] [b y]) body)
     [(letrec ((,names ,vals) ...) (call (var ,callname local) ,callargs))
