@@ -14,6 +14,19 @@ Machine: 121GB RAM, Linux 6.17.
 | Gremlin   |         12.36s  |          12.33s  |     12.17s  | ~tied                    |
 | **TOTAL** |     **80.18s**  |      **80.65s**  | **86.37s**  | **1.08x faster**         |
 
+### Gremlin Pipeline (N=20000 vertices, E=20 edges/vertex)
+
+| Variant | DSL style | Mechanism | Time |
+|---|---|---|---:|
+| Chez pipeline   | flat `(traverse g (V) (as a) (out) ...)` | `syntax-case` macro | 23.67s |
+| Chez gremlin-fold | nested `(gremlin-fold a stream acc body)` | `syntax-rules` macro | 23.84s |
+| Seed2 gremlin-fold | nested `(gremlin-fold a stream acc body)` | vau + specializer | 23.93s |
+| Seed2 pipeline | flat `(traverse g (V) (as a) (out) ...)` | recursive vau + specializer | 24.01s |
+
+All four within ~1.5%.  The Seed2 pipeline DSL compiles a flat TinkerPop-style
+step list into direct nested loops at compile time, matching Chez's syntax-case
+macro performance.
+
 ## Observations
 
 ### Seed2 adds no overhead
@@ -22,81 +35,56 @@ Seed1 and Seed2 produce nearly identical execution times on all benchmarks.
 The `(values news out)` calling convention machinery is zero-cost when not
 used, and adds negligible overhead (~0.2%) when used (Gremlin).
 
-### Gremlin: `as!` operative vs `let` bindings
+### Gremlin Pipeline: vau as a macro system
 
-The Gremlin benchmark is the only one that exercises Seed2's caller-env
-extension. The `as!` operative compiles to proper Chez variables via
-`(values news out)`, producing code structurally equivalent to the Chez
-version's `let*` bindings.
-
-**Note on style:** Real Gremlin uses method chaining:
-
-```groovy
-g.V().has('age',gt(30)).as('a').out('knows').as('b').select('a','b')
-```
-
-In Scheme this would naturally be a threading macro (like Clojure's `->`)
-where each step transforms a traverser and `as` binds intermediate state:
+The Gremlin pipeline benchmark demonstrates vau operatives as an alternative
+to macros for building compile-time DSLs.  Both versions use the same flat
+TinkerPop-inspired syntax:
 
 ```scheme
-(~> g (V) (has 'age (gt 30)) (as 'a) (out 'knows) (as 'b) (select 'a 'b))
+(traverse g
+  (V)                          ;; g.V()
+  (as a)                       ;; .as('a')
+  (out)                        ;; .out()
+  (as b)                       ;; .as('b')
+  (where (same-group? g a b))  ;; .filter{sameGroup('a','b')}
+  (out)                        ;; .out()
+  (as c)                       ;; .as('c')
+  (where (same-group? g a c))  ;; .filter{sameGroup('a','c')}
+  (where (edge? g c a))        ;; .filter{hasEdge('c','a')}
+  (count))                     ;; .count()
 ```
 
-Our benchmark does not use this pipeline style — it uses explicit nested
-loops with `as!` calls at each level. A threading-based DSL where each
-step is a vau operative that both transforms the traverser *and* extends
-the caller's environment via `define env` would be a more faithful Gremlin
-analog, and a natural next step for this benchmark.
+Both compile to the same nested-loop code at compile time.  The difference
+is in the definition of `traverse`:
 
-The traversal core in Seed2:
+**Seed2 (vau):** `process-pipeline` is a recursive vau that receives the
+step list as a rest-arg (static `(quot ...)` data).  The specializer
+constant-folds `car`/`cdr`/`null?`/`eq?`/`cons` on the step list, and
+a new rule compiles `(eval (quot (process-pipeline ...)) (dyn-env))` inline
+by re-specializing the vau body.  The entire 10-step pipeline unfolds at
+compile time.
 
-```scheme
-(begin
-  (as! a-entry (graph-ref g ai))
-  (as! a-grp (graph-group a-entry))
-  (as! a-nbrs (graph-neighbors a-entry))
-  (let loop-b ((bs a-nbrs) (count count))
-    ...
-    (begin
-      (as! bi (car bs))
-      (as! b-entry (graph-ref g bi))
-      (as! b-grp (graph-group b-entry))
-      ...)))
-```
+**Chez (syntax-case):** `traverse-steps` is a recursive `syntax-case` macro
+that pattern-matches the first step and recurses on the rest.  `datum->syntax`
+breaks hygiene to thread the accumulator variable.
 
-The equivalent Chez code:
+The key difference is *what you need to know to write it*:
+- The Seed2 vau is written as ordinary code — `car`, `cdr`, `if`, `eval`
+- The Chez macro requires `syntax-case`, `datum->syntax`, literal-set
+  keywords, and template splicing
 
-```scheme
-(let* ([a-entry (graph-ref g ai)]
-       [a-grp (graph-group a-entry)]
-       [a-nbrs (graph-neighbors a-entry)])
-  (let loop-b ([bs a-nbrs] [count count])
-    ...
-    (let* ([bi (car bs)]
-           [b-entry (graph-ref g bi)]
-           [b-grp (graph-group b-entry)])
-      ...)))
-```
+Both produce identical nested loops.  The vau is runtime code that the
+compiler happens to fully evaluate at compile time; the macro is explicitly
+compile-time code.
 
-Both are readable. The Seed2 version is flatter — `as!` statements in a
-`begin` block instead of nested `let*`. This is a stylistic difference,
-not a readability win. The real advantage is that `as!` is **user-defined**:
-it's a two-line operative, not a language primitive. You can define new
-binding constructs (like Gremlin's `as`, `where`, `select`) as library
-code, compose them freely, and the compiler eliminates the abstraction.
+### Gremlin Fold: `as!` operative vs `let` bindings
 
-In Chez, `let*` is built into the language. You cannot define new binding
-forms without `syntax-case` macros, which require understanding the macro
-expansion model, phase separation, and hygiene. In Seed2, `as!` is just:
-
-```scheme
-(define as! (vau (name val-expr) env
-  (define env name (eval val-expr env))))
-```
-
-The readability difference is not in the *use site* but in the *definition
-site*: anyone who can write a function can write `as!` in Seed2. Writing
-the equivalent `define-syntax` in Chez requires significantly more expertise.
+The original Gremlin benchmark uses `gremlin-fold`, a 5-line vau operative
+(Seed2) or a 4-line `syntax-rules` macro (Chez).  Both produce identical
+`fold-left`-style code.  The Seed2 version shares the caller's scope
+(no hygiene barrier for `acc`), while the Chez version requires the user
+to name the accumulator explicitly.
 
 ### Why Seed beats Chez on Abacus2
 
