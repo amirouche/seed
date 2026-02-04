@@ -107,7 +107,11 @@ vau does not require learning a new DSL, the pattern matching domain specific la
 
 - **syntax-case** (Collatz ≤ 20,000,000 | Special ≤ 40,000,000): Same workload as syntax-rules, but the Chez baseline uses `syntax-case` procedural macros instead of `syntax-rules`. Tests vau-as-macro against procedural macros.
 
-- **Abacus** (bal-depth=25): Arithmetic expression evaluator using `match` with catamorphism patterns (`,[x]`) and guard clauses. Evaluates a balanced binary tree of 33,554,432 additions. Tests compiled pattern matching performance after alist fusion.
+- **Abacus** (bal-depth=27): Arithmetic expression evaluator using `match` with catamorphism patterns (`,[x]`) and guard clauses. Evaluates a balanced binary tree of 134,217,728 additions. Tests compiled pattern matching performance after alist fusion.
+
+## Parameters
+
+N-Queens n=14 | Collatz ≤ 20,000,000 | Special ≤ 40,000,000 | Abacus bal-depth=27
 
 | Benchmark | Runner | Compile | Execute | Total | Wallclock | RSS (MB) | Ratio |
 |---|---|---:|---:|---:|---:|---:|---:|
@@ -117,8 +121,8 @@ vau does not require learning a new DSL, the pattern matching domain specific la
 | | chez | n/a | 10.636s | 10.636s | 10.66s | 48 | 1.05x |
 | syntax-case | seed2 | 0.000s | 11.184s | 11.184s | 11.36s | 48 | |
 | | chez | n/a | 10.635s | 10.635s | 10.66s | 48 | 1.05x |
-| Abacus | seed2 | 0.001s | 2.606s | 2.607s | 2.89s | 2995 | |
-| | chez | n/a | 2.344s | 2.344s | 2.45s | 2177 | 1.11x |
+| Abacus | seed2 | 0.001s | 13.463s | 13.464s | 13.53s | 11255 | |
+| | chez | n/a | 13.871s | 13.871s | 14.01s | 8693 | 0.97x |
 
 Ratio = seed execute / chez execute (lower is better, 1.00x = parity)
 
