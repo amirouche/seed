@@ -12,7 +12,17 @@ He was not the only one to believe in the ideas that are in Kernel. For example,
 
 The thing that got me hooked on Kernel, despite my passion for code, was laziness. Despite the excellent work to document syntax rules and syntax-case such as the work of [“Extending a Language — Writing Powerful Macros in Scheme” by Marc Nieper-Wißkirchen](https://github.com/mnieper/scheme-macros), I do not subscribe to this approach. I prefer Kernel’s `vau`. I like the idea of unifying macros and procedures so you don't need two separate metalinguistic systems, one mechanism instead of two.
 
-However, vau was cursed. [In 1998, Wand, "The Theory of Fexprs is Trivial," ACM SIGPLAN Notices 33(9), 1998.](https://www.ccs.neu.edu/home/wand/pubs.html#Wand98) proved that [fexpr](https://en.wikipedia.org/wiki/Fexpr) make equational reasoning impossible because you cannot substitute equals for equals when you don’t know if an expression will be evaluated. Compilation was considered intractable. Until 2026. 
+However, vau was cursed. [In 1998, Wand, "The Theory of Fexprs is Trivial," ACM SIGPLAN Notices 33(9), 1998.](https://www.ccs.neu.edu/home/wand/pubs.html#Wand98) proved that [fexpr](https://en.wikipedia.org/wiki/Fexpr) make equational reasoning impossible because you cannot substitute equals for equals when you don’t know if an expression will be evaluated. Compilation was considered intractable. 
+
+Until 2026. 
+
+EDIT (2026-02-06): I was pointed to kraken-lang.org and in particular
+[Practical compilation of fexprs using partial evaluation: Fexprs can
+performantly replace macros in purely-functional
+Lisp](https://arxiv.org/abs/2303.12254). The difference between Kraken
+and seed, is that seed is not purely functional, seed support
+`define`, and `set!` but not on dynamic environments, also `seed` is
+an extension of chezscheme.
 
 ## How
 
@@ -109,20 +119,30 @@ vau does not require learning a new DSL, the pattern matching domain specific la
 
 ## Parameters
 
-N-Queens n=14 | Collatz ≤ 20,000,000 | Special ≤ 40,000,000 | Abacus bal-depth=27
+- gc disabled
+- optimization level: 3
+- chez scheme 10.0.0
 
-| Benchmark | Runner | Compile | Execute | Total | Wallclock | RSS (MB) | Ratio |
-|---|---|---:|---:|---:|---:|---:|---:|
-| N-Queens | seed2 | 0.000s | 18.336s | 18.336s | 18.54s | 1880 | |
-| | chez | n/a | 19.699s | 19.699s | 19.78s | 1988 | 0.93x |
-| syntax-rules | seed2 | 0.000s | 11.161s | 11.161s | 11.34s | 48 | |
-| | chez | n/a | 10.636s | 10.636s | 10.66s | 48 | 1.05x |
-| syntax-case | seed2 | 0.000s | 11.184s | 11.184s | 11.36s | 48 | |
-| | chez | n/a | 10.635s | 10.635s | 10.66s | 48 | 1.05x |
-| Abacus | seed2 | 0.001s | 13.463s | 13.464s | 13.53s | 11255 | |
-| | chez | n/a | 13.871s | 13.871s | 14.01s | 8693 | 0.97x |
+```
+── N-Queens (n=14) ─────────────────────────────────────────────
+  seed.scm (vau)                     compile:    0.000s  execute:    8.446s
+  Chez (native)                                         execute:   12.813s
 
-Ratio = seed execute / chez execute (lower is better, 1.00x = parity)
+── Collatz: vau vs syntax-rules ─────────────────────────────────
+  seed.scm (vau)                     compile:    0.000s  execute:   10.316s
+  Chez (syntax-rules)                                   execute:   10.401s
+
+── Abacus: match catamorphism (depth=27) ──────────
+  seed.scm (vau match)               compile:    0.001s  tree:    1.176s  eval:    1.620s
+  Chez (SRFI-241 match)                                  tree:    1.331s  eval:    1.566s
+
+── Summary ────────────────────────────────────────────────────────
+Benchmark                Compile  Seed (vau)        Chez    Ratio
+────────────────────  ──────────  ──────────  ──────────  ───────
+N-Queens                  0.000s      8.446s     12.813s    0.66x
+Collatz                   0.000s     10.316s     10.401s    0.99x
+Abacus                    0.001s      2.798s      2.901s    0.96x
+```
 
 ## Conclusion
 
