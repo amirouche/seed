@@ -1,0 +1,40 @@
+(define list-tabulate
+  (lambda (n proc)
+    (letrec ((loop (lambda (i acc)
+                     (if (< i 0) acc (loop (- i 1) (cons (proc i) acc))))))
+      (loop (- n 1) '()))))
+(define any exists)
+(define n-queens
+  (lambda (n)
+    (letrec
+        ((place-initial-row
+          (lambda ()
+            (list-tabulate n (lambda (col) (list (cons 0 col))))))
+         (invalid?
+          (lambda (soln-so-far row col)
+            (any (lambda (posn)
+                   (if (= col (cdr posn)) #t
+                       (= (abs (- row (car posn)))
+                          (abs (- col (cdr posn))))))
+                 soln-so-far)))
+         (place-on-row
+          (lambda (soln-so-far row)
+            (letrec ((try-col
+                      (lambda (col res)
+                        (if (= col n) res
+                            (try-col (+ 1 col)
+                                     (if (invalid? soln-so-far row col) res
+                                         (cons (cons (cons row col) soln-so-far)
+                                               res)))))))
+              (try-col 0 '()))))
+         (solve
+          (lambda (res row)
+            (if (= row n) res
+                (solve (apply append
+                              (map (lambda (soln) (place-on-row soln row))
+                                   res))
+                       (+ 1 row))))))
+      (solve (place-initial-row) 1))))
+(display (length (n-queens 14)))
+(display " solutions")
+(newline)

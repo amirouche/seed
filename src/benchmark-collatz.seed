@@ -1,0 +1,33 @@
+(define and2 (vau (a b) e (if (eval a e) (eval b e) #f)))
+(define or2  (vau (a b) e (let ((v (eval a e))) (if v v (eval b e)))))
+(define collatz-length
+  (lambda (n)
+    (letrec ((count (lambda (x steps)
+      (if (= x 1) steps
+          (if (even? x)
+              (count (quotient x 2) (+ steps 1))
+              (count (+ (* 3 x) 1) (+ steps 1)))))))
+      (count n 0))))
+(define find-longest-collatz
+  (lambda (limit)
+    (letrec ((search (lambda (i best-n best-len)
+      (if (>= i limit) (list best-n best-len)
+          (let ((len (collatz-length i)))
+            (if (> len best-len)
+                (search (+ i 1) i len)
+                (search (+ i 1) best-n best-len)))))))
+      (search 1 1 0))))
+(define count-special
+  (lambda (limit)
+    (letrec ((loop (lambda (i count)
+      (if (>= i limit) count
+          (let ((div3 (= (remainder i 3) 0))
+                (div7 (= (remainder i 7) 0)))
+            (let ((both (and2 div3 div7))
+                  (neither (and2 (not div3) (not div7))))
+              (if (or2 both neither)
+                  (loop (+ i 1) (+ count 1))
+                  (loop (+ i 1) count))))))))
+      (loop 1 0))))
+(display "Collatz: ")    (display (find-longest-collatz 20000000)) (newline)
+(display "Special: ")    (display (count-special 40000000))        (newline)
