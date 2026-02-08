@@ -1,18 +1,17 @@
-(import (chezscheme))
-(optimize-level 3)
-(define (elapsed-seconds start end)
-  (let ([d (time-difference end start)])
-    (+ (time-second d) (/ (time-nanosecond d) 1e9))))
-(define __bench-t0 (current-time 'time-monotonic))
+(library (benchmarks collatz collatz)
+  (export run-benchmark)
+  (import (chezscheme))
 
 (define-syntax and2 (syntax-rules () [(_ a b) (if a b #f)]))
 (define-syntax or2  (syntax-rules () [(_ a b) (let ([v a]) (if v v b))]))
+
 (define (collatz-length n)
   (let count ([x n] [steps 0])
     (if (= x 1) steps
         (if (even? x)
             (count (quotient x 2) (+ steps 1))
             (count (+ (* 3 x) 1) (+ steps 1))))))
+
 (define (find-longest-collatz limit)
   (let search ([i 1] [best-n 1] [best-len 0])
     (if (>= i limit) (list best-n best-len)
@@ -20,6 +19,7 @@
           (if (> len best-len)
               (search (+ i 1) i len)
               (search (+ i 1) best-n best-len))))))
+
 (define (count-special limit)
   (let loop ([i 1] [count 0])
     (if (>= i limit) count
@@ -29,9 +29,17 @@
                    (and2 (not div3) (not div7)))
               (loop (+ i 1) (+ count 1))
               (loop (+ i 1) count))))))
-(display "Collatz: ")    (display (find-longest-collatz 20000000)) (newline)
-(display "Special: ")    (display (count-special 40000000))        (newline)
 
-(let ([__bench-t1 (current-time 'time-monotonic)])
-  (fprintf (current-error-port) "~nMONOTONIC: ~,6fs~n"
-           (elapsed-seconds __bench-t0 __bench-t1)))
+(define COLLATZ-LIMIT
+  (let ([env-val (getenv "SEED_COLLATZ")])
+    (if env-val (string->number env-val) 20000000)))
+(define SPECIAL-LIMIT
+  (let ([env-val (getenv "SEED_SPECIAL")])
+    (if env-val (string->number env-val) 40000000)))
+
+(define (run-benchmark)
+  (time
+    (begin
+      (display "Collatz: ") (display (find-longest-collatz COLLATZ-LIMIT)) (newline)
+      (display "Special: ") (display (count-special SPECIAL-LIMIT)) (newline))))
+)

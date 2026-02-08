@@ -8,16 +8,6 @@
 ;; MATCH LIBRARY (from match.k lines 1–317)
 ;; ============================================================
 
-;; ---- Helper: alist lookup by eq? ----
-
-(define assq
-  (lambda (key alist)
-    (if (null? alist)
-        #f
-        (if (eq? key (car (car alist)))
-            (car alist)
-            (assq key (cdr alist))))))
-
 ;; ---- Helper: strip quote wrapper ----
 
 (define unwrap-quote
@@ -284,41 +274,26 @@
 ;; --- Deep right-leaning: sum 1..100 ---
 
 (let ((sum100 (make-sum-tree 100)))
-  (let ((t0 (current-nanoseconds)))
-    (let ((result (eval-expr sum100)))
-      (let ((t1 (current-nanoseconds)))
-        (display "Sum 1..100 (depth 99): ")
-        (display result)
-        (display " (eval: ")
-        (display (quotient (- t1 t0) 1000000))
-        (display "ms)")
-        (newline)))))
+  (let ((result (eval-expr sum100)))
+    (display "Sum 1..100 (depth 99): ")
+    (display result)
+    (newline)))
 
 ;; --- Balanced trees ---
 
 (let ((bal10 (make-balanced-tree 10)))
-  (let ((t0 (current-nanoseconds)))
-    (let ((result (eval-expr bal10)))
-      (let ((t1 (current-nanoseconds)))
-        (display "Balanced tree depth 10 (1024 leaves): ")
-        (display result)
-        (display " (eval: ")
-        (display (quotient (- t1 t0) 1000000))
-        (display "ms)")
-        (newline)))))
+  (let ((result (eval-expr bal10)))
+    (display "Balanced tree depth 10 (1024 leaves): ")
+    (display result)
+    (newline)))
 
-(let ((t0 (current-nanoseconds)))
-  (let ((tree (make-balanced-tree 27)))
-    (let ((t1 (current-nanoseconds)))
-      (let ((result (eval-expr tree)))
-        (let ((t2 (current-nanoseconds)))
-          (display "Balanced tree depth 27: ")
-          (display result)
-          (display " (tree: ")
-          (display (quotient (- t1 t0) 1000000))
-          (display "ms, eval: ")
-          (display (quotient (- t2 t1) 1000000))
-          (display "ms)")
-          (newline)
-          (display "TREE-BUILD-NS: ") (display (- t1 t0)) (newline)
-          (display "EVAL-EXPR-NS: ")  (display (- t2 t1)) (newline))))))
+(define abacus-depth
+  (let ((env-val (getenv "SEED_ABACUS_DEPTH")))
+    (if env-val (string->number env-val) 27)))
+(let ((tree (time (make-balanced-tree abacus-depth))))
+  (display "Balanced tree depth ")
+  (display abacus-depth)
+  (display ": ")
+  (let ((result (time (eval-expr tree))))
+    (display result)
+    (newline)))

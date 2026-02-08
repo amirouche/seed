@@ -1,14 +1,16 @@
 ;;;
 ;;; Seed Test Suite — extracted from seed.scm
 ;;;
-;;; Run: scheme --script seed2-checks.scm
+;;; Run: scheme --script checks.scm
 ;;;
 
-(load "seed.scm")
+(import (seed))
 
 ;; =========================================================================
 ;; Test Infrastructure
 ;; =========================================================================
+
+(define dev?! (dev! #t))
 
 (define test-count 0)
 (define test-pass 0)

@@ -1,13 +1,11 @@
-(import (chezscheme))
-(optimize-level 3)
-(define (elapsed-seconds start end)
-  (let ([d (time-difference end start)])
-    (+ (time-second d) (/ (time-nanosecond d) 1e9))))
-(define __bench-t0 (current-time 'time-monotonic))
+(library (benchmarks n-queen n-queen)
+  (export run-benchmark)
+  (import (chezscheme))
 
 (define (list-tabulate n proc)
   (let loop ((i (- n 1)) (acc '()))
     (if (< i 0) acc (loop (- i 1) (cons (proc i) acc)))))
+
 (define (n-queens n)
   (letrec
       ((place-initial-row
@@ -36,10 +34,15 @@
                                  res))
                      (+ 1 row))))))
     (solve (place-initial-row) 1)))
-(display (length (n-queens 14)))
-(display " solutions")
-(newline)
 
-(let ([__bench-t1 (current-time 'time-monotonic)])
-  (fprintf (current-error-port) "~nMONOTONIC: ~,6fs~n"
-           (elapsed-seconds __bench-t0 __bench-t1)))
+(define NQUEEN-N
+  (let ([env-val (getenv "SEED_NQUEEN")])
+    (if env-val (string->number env-val) 14)))
+
+(define (run-benchmark)
+  (time
+    (begin
+      (display (length (n-queens NQUEEN-N)))
+      (display " solutions")
+      (newline))))
+)

@@ -1,0 +1,390 @@
+;;; benchmark-abacus2.seed — Multi-operand Arithmetic Evaluator Benchmark
+;;;
+;;; Exercises match catamorphism with ellipsis patterns (,[x] ...)
+;;; to implement a recursive arithmetic expression evaluator that supports
+;;; operations with more than 2 operands (e.g., (+ 1 2 3 4 5)).
+;;; The entire recursive evaluation is handled by the pattern matcher.
+
+;; ============================================================
+;; MATCH LIBRARY (from match.k lines 1–317)
+;; ============================================================
+
+;; ---- Helper: strip quote wrapper ----
+
+(define unwrap-quote
+  (lambda (x)
+    (if (pair? x)
+        (if (eq? (car x) 'quote)
+            (cadr x)
+            x)
+        x)))
+
+;; ---- Sentinel for match failure ----
+
+(define match-fail (cons 'match 'fail))
+
+;; ---- Extract pattern variable names ----
+
+(define extract-vars
+  (lambda (pat)
+    (if (pair? pat)
+        (if (eq? (car pat) 'unquote)
+            (let ((inner (cadr pat)))
+              (if (pair? inner)
+                  (if (eq? (car inner) '_) '() (list (car inner)))
+                  (if (eq? inner '_) '() (list inner))))
+            (append (extract-vars (car pat))
+                    (extract-vars (cdr pat))))
+        '())))
+
+;; ---- Build let-expression for eval ----
+
+(define make-let
+  (lambda (bindings body)
+    (if (null? bindings)
+        body
+        (list 'let
+              (map (lambda (b)
+                     (list (car b) (list 'quote (cdr b))))
+                   bindings)
+              body))))
+
+;; ---- Split list at position n ----
+
+(define split-at
+  (lambda (lst n)
+    (if (= n 0)
+        (cons '() lst)
+        (let ((rest (split-at (cdr lst) (- n 1))))
+          (cons (cons (car lst) (car rest))
+                (cdr rest))))))
+
+;; ---- Check if next element is ellipsis ----
+
+(define has-ellipsis-next
+  (lambda (rest)
+    (if (pair? rest)
+        (if (symbol? (car rest))
+            (eq? (car rest) '...)
+            #f)
+        #f)))
+
+;; ---- Count fixed elements after ellipsis ----
+
+(define count-fixed-elts
+  (lambda (pats)
+    (if (null? pats)
+        0
+        (if (pair? pats)
+            (if (eq? (car pats) 'unquote)
+                0
+                (+ 1 (count-fixed-elts (cdr pats))))
+            0))))
+
+;; ---- Ellipsis accumulator helpers (OPTIMIZED for single-variable case) ----
+
+;; Check if pattern is simple catamorphism: (unquote (var))
+(define simple-cata-pattern?
+  (lambda (pat)
+    (and (pair? pat)
+         (eq? (car pat) 'unquote)
+         (pair? (cdr pat))
+         (pair? (cadr pat))
+         (null? (cddr pat)))))
+
+;; Ultra-fast path: directly map loop-fn without pmatch overhead
+(define match-each-ultra-fast
+  (lambda (vals var-name loop-fn)
+    (letrec
+        ((map-loop
+          (lambda (remaining result)
+            (if (null? remaining)
+                (list (cons var-name (reverse result)))
+                (map-loop (cdr remaining)
+                         (cons (loop-fn (car remaining)) result))))))
+      (map-loop vals '()))))
+
+;; Fast path for single variable
+(define match-each-fast
+  (lambda (sub-pat vals var-name loop-fn)
+    (if (simple-cata-pattern? sub-pat)
+        (match-each-ultra-fast vals var-name loop-fn)
+        (letrec
+            ((collect
+              (lambda (remaining result)
+                (if (null? remaining)
+                    (list (cons var-name (reverse result)))
+                    (let ((binds (pmatch sub-pat (car remaining) loop-fn '())))
+                      (if binds
+                          (let ((val (cdr (car binds))))
+                            (collect (cdr remaining) (cons val result)))
+                          #f))))))
+          (collect vals '())))))
+
+(define add-to-accum
+  (lambda (accum binds)
+    (map (lambda (a)
+           (let ((found (assq (car a) binds)))
+             (if found
+                 (cons (car a) (cons (cdr found) (cdr a)))
+                 a)))
+         accum)))
+
+(define match-each
+  (lambda (sub-pat vals var-names loop-fn)
+    ;; Optimize common case: single variable
+    (if (and (pair? var-names)
+             (null? (cdr var-names)))
+        ;; Fast path: O(N) instead of O(N²)
+        (match-each-fast sub-pat vals (car var-names) loop-fn)
+        ;; General case: multiple variables
+        (letrec
+            ((collect
+              (lambda (remaining accum)
+                (if (null? remaining)
+                    (map (lambda (a) (cons (car a) (reverse (cdr a))))
+                         accum)
+                    (let ((binds (pmatch sub-pat (car remaining) loop-fn '())))
+                      (if binds
+                          (collect (cdr remaining)
+                                   (add-to-accum accum binds))
+                          #f))))))
+          (collect vals (map (lambda (v) (list v)) var-names))))))
+
+;; ---- Ellipsis pattern handler ----
+
+(define pmatch-ellipsis
+  (lambda (sub-pat rest-pats val loop-fn acc)
+    ;; OPTIMIZATION: Skip split-at when no trailing elements
+    (if (null? rest-pats)
+        ;; Fast path: no trailing patterns, use entire list
+        (let ((var-names (extract-vars sub-pat)))
+          (let ((ell-binds (match-each sub-pat val var-names loop-fn)))
+            (if ell-binds
+                (append ell-binds acc)
+                #f)))
+        ;; General path: split for trailing patterns
+        (let ((rest-count (count-fixed-elts rest-pats)))
+          (let ((val-len (length val)))
+            (if (< val-len rest-count)
+                #f
+                (let ((sp (split-at val (- val-len rest-count))))
+                  (let ((ellipsis-vals (car sp))
+                        (rest-vals (cdr sp)))
+                    (let ((var-names (extract-vars sub-pat)))
+                      (let ((ell-binds (match-each sub-pat ellipsis-vals var-names loop-fn)))
+                        (if ell-binds
+                            (pmatch-elts rest-pats rest-vals loop-fn
+                                         (append ell-binds acc))
+                            #f)))))))))))
+
+
+;; ---- Core pattern matcher ----
+
+(define pmatch
+  (lambda (pat val loop-fn acc)
+    (if (pair? pat)
+        (if (eq? (car pat) 'unquote)
+            (let ((inner (cadr pat)))
+              (if (pair? inner)
+                  (let ((name (car inner)))
+                    (if (eq? name '_)
+                        acc
+                        (cons (cons name (loop-fn val)) acc)))
+                  (if (eq? inner '_)
+                      acc
+                      (cons (cons inner val) acc))))
+            (pmatch-elts pat val loop-fn acc))
+        (if (null? pat)
+            (if (null? val) acc #f)
+            (if (equal? pat val) acc #f)))))
+
+;; ---- List/pair element matcher ----
+
+(define pmatch-elts
+  (lambda (pat-list val loop-fn acc)
+    (if (null? pat-list)
+        (if (null? val) acc #f)
+        (if (pair? pat-list)
+            (if (eq? (car pat-list) 'unquote)
+                (pmatch pat-list val loop-fn acc)
+                (if (has-ellipsis-next (cdr pat-list))
+                    (pmatch-ellipsis (car pat-list) (cddr pat-list) val loop-fn acc)
+                    (if (pair? val)
+                        (let ((acc* (pmatch (car pat-list) (car val) loop-fn acc)))
+                          (if acc*
+                              (pmatch-elts (cdr pat-list) (cdr val) loop-fn acc*)
+                              #f))
+                        #f)))
+            (if (equal? pat-list val) acc #f)))))
+
+;; ---- Clause parser ----
+
+(define parse-clause
+  (lambda (clause)
+    (let ((pat (car clause))
+          (rest (cdr clause)))
+      (if (pair? rest)
+          (if (pair? (car rest))
+              (if (eq? (car (car rest)) 'guard)
+                  (list pat (cadr (car rest)) (cadr rest))
+                  (list pat #f (car rest)))
+              (list pat #f (car rest)))
+          (error 'match "clause missing body" clause)))))
+
+;; ---- The match operative ----
+
+(define match
+  (vau (expr clauses) env
+    (letrec
+        ((loop
+          (lambda (val)
+            (try-clauses val (unwrap-quote clauses))))
+         (try-clauses
+          (lambda (val cls)
+            (if (null? cls)
+                (error 'match "no matching clause" val)
+                (let ((result (try-one val (car cls))))
+                  (if (eq? result match-fail)
+                      (try-clauses val (cdr cls))
+                      result)))))
+         (try-one
+          (lambda (val clause)
+            (let ((parsed (parse-clause clause)))
+              (let ((pat (car parsed))
+                    (guard-expr (cadr parsed))
+                    (body (cadr (cdr parsed))))
+                (let ((binds (pmatch pat val loop '())))
+                  (if binds
+                      (if guard-expr
+                          (if (eval (make-let binds guard-expr) env)
+                              (eval (make-let binds body) env)
+                              match-fail)
+                          (eval (make-let binds body) env))
+                      match-fail)))))))
+      (loop (eval expr env)))))
+
+;; ============================================================
+;; ARITHMETIC EVALUATOR (catamorphism-based, multi-operand)
+;; ============================================================
+;; ,[args] ... recursively evaluates sub-expressions via match's loop.
+;; Operations accept 1+ arguments (e.g., (+ 1 2 3 4)).
+;; The entire recursive descent is driven by the pattern matcher.
+
+;; Multi-operand evaluator using ellipsis + catamorphism
+;; The ,[args] ... pattern recursively evaluates each argument
+;; and collects them into a list, which we then apply the operation to.
+(define eval-expr
+  (lambda (expr)
+    (match expr '(
+      ((+ (unquote (args)) ...)  (apply + args))
+      ((- (unquote (args)) ...)  (apply - args))
+      ((* (unquote (args)) ...)  (apply * args))
+      ((/ (unquote (args)) ...)  (apply quotient args))
+      ((unquote n) (guard (number? n))  n)))))
+
+;; ============================================================
+;; TREE GENERATORS (multi-operand)
+;; ============================================================
+
+;; Build flat sum: (+ 1 2 3 ... n)
+(define make-sum-tree
+  (lambda (n)
+    (letrec ((build
+              (lambda (i)
+                (if (> i n)
+                    '()
+                    (cons i (build (+ i 1)))))))
+      (cons '+ (build 1)))))
+
+;; Build balanced ternary (3-ary) tree of depth d
+;; Each leaf is 1, internal nodes are (+) with 3 children.
+;; Result: 3^d leaves, each = 1, so total = 3^d.
+(define make-balanced-tree
+  (lambda (d)
+    (if (= d 0)
+        1
+        (list '+ (make-balanced-tree (- d 1))
+                  (make-balanced-tree (- d 1))
+                  (make-balanced-tree (- d 1))))))
+
+;; Build a mixed tree with varying operand counts (3-5 operands per node)
+(define make-mixed-tree
+  (lambda (d)
+    (letrec ((make-node
+              (lambda (depth variant)
+                (if (= depth 0)
+                    1
+                    (let ((count (+ 3 (modulo variant 3))))
+                      (cons '+ (make-children (- depth 1) variant count))))))
+             (make-children
+              (lambda (depth variant count)
+                (if (= count 0)
+                    '()
+                    (cons (make-node depth (+ variant count))
+                          (make-children depth (+ variant 1) (- count 1)))))))
+      (make-node d 0))))
+
+;; ============================================================
+;; BENCHMARK
+;; ============================================================
+
+(display "Multi-operand Arithmetic Evaluator Benchmark (exercises match catamorphism)")
+(newline)
+(newline)
+
+;; --- Correctness tests ---
+
+(display "Simple 3-arg:  (+ 1 2 3) = ")
+(display (eval-expr '(+ 1 2 3)))
+(newline)
+
+(display "Simple 4-arg:  (* 2 3 4 5) = ")
+(display (eval-expr '(* 2 3 4 5)))
+(newline)
+
+(display "Nested:  (* (+ 3 4 5) (- 10 2)) = ")
+(display (eval-expr '(* (+ 3 4 5) (- 10 2))))
+(newline)
+
+(display "Division: (/ (* 100 2 3) (- 20 10)) = ")
+(display (eval-expr '(/ (* 100 2 3) (- 20 10))))
+(newline)
+
+;; --- Multi-operand sum: 1..50 ---
+
+(let ((sum50 (make-sum-tree 50)))
+  (let ((result (eval-expr sum50)))
+    (display "Sum 1..50 (multi-operand): ")
+    (display result)
+    (newline)))
+
+;; --- Balanced ternary tree ---
+
+(let ((bal8 (make-balanced-tree 8)))
+  (let ((result (eval-expr bal8)))
+    (display "Balanced ternary tree depth 8 (6561 leaves): ")
+    (display result)
+    (newline)))
+
+;; --- Mixed tree with varying operand counts ---
+
+(let ((mixed6 (make-mixed-tree 6)))
+  (let ((result (eval-expr mixed6)))
+    (display "Mixed tree depth 6 (3-5 operands per node): ")
+    (display result)
+    (newline)))
+
+;; --- Main benchmark: configurable depth ternary tree ---
+
+(define abacus-depth
+  (let ((env-val (getenv "SEED_ABACUS2_DEPTH")))
+    (if env-val (string->number env-val) 17)))
+
+(let ((tree (time (make-balanced-tree abacus-depth))))
+  (display "Balanced ternary tree depth ")
+  (display abacus-depth)
+  (display ": ")
+  (let ((result (time (eval-expr tree))))
+    (display result)
+    (newline)))

@@ -29,5 +29,11 @@
                   (loop (+ i 1) (+ count 1))
                   (loop (+ i 1) count))))))))
       (loop 1 0))))
-(display "Collatz: ")    (display (find-longest-collatz 20000000)) (newline)
-(display "Special: ")    (display (count-special 40000000))        (newline)
+(define collatz-limit
+  (let ((env-val (getenv "SEED_COLLATZ")))
+    (if env-val (string->number env-val) 20000000)))
+(define special-limit
+  (let ((env-val (getenv "SEED_SPECIAL")))
+    (if env-val (string->number env-val) 40000000)))
+(display "Collatz: ")    (display (find-longest-collatz collatz-limit)) (newline)
+(display "Special: ")    (display (count-special special-limit))        (newline)

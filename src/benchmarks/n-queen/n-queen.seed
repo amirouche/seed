@@ -35,6 +35,9 @@
                                    res))
                        (+ 1 row))))))
       (solve (place-initial-row) 1))))
-(display (length (n-queens 14)))
+(define nqueen-n
+  (let ((env-val (getenv "SEED_NQUEEN")))
+    (if env-val (string->number env-val) 14)))
+(display (length (n-queens nqueen-n)))
 (display " solutions")
 (newline)
