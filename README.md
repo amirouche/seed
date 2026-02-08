@@ -109,39 +109,38 @@ vau does not require learning a new DSL, the pattern matching domain specific la
 
 ## Benchmarks
 
-- **N-Queens** (n=14): Backtracking search counting all solutions to the 14-queens problem. Pure lambda code with list allocation, higher-order functions (map, apply, append), and deep recursion. Tests raw compiled code performance with no vau involvement.
+```bash
+# make-benchmark.sh
+── N-Queens — exercising single CPU ──────────────────────────────
+  scheme --script seedink.scm n-queen.seed    compile:      n/as  execute: 22.988239534s  wall:   23.598s
+  scheme --script n-queen.scm                                    execute:   23.003s  wall:   23.398s
 
-- **syntax-rules** (Collatz ≤ 20,000,000 | Special ≤ 40,000,000): Two numeric loops using `and2`/`or2` short-circuit operators. Seed implements these as `vau` operatives that are specialized at compile time. Chez uses `syntax-rules` macros. Tests vau-as-macro against hygienic pattern macros.
+── Collatz — exercising syntax-rules ────────────────────────────
+  scheme --script seedink.scm collatz.seed    compile:      n/as  execute: 9.995808085s  wall:   10.263s
+  scheme --script collatz.scm                                    execute:   10.307s  wall:   10.342s
 
-- **syntax-case** (Collatz ≤ 20,000,000 | Special ≤ 40,000,000): Same workload as syntax-rules, but the Chez baseline uses `syntax-case` procedural macros instead of `syntax-rules`. Tests vau-as-macro against procedural macros.
+── Abacus — exercising syntax-case ───────────────────────────────
+  scheme --script seedink.scm abacus.seed     compile:      n/as  tree: 1.174771122s  eval: 1.649855682s  wall:    3.356s
+  scheme --script abacus.scm                                      tree:    1.259s  eval:    1.560s  wall:    3.108s
 
-- **Abacus** (bal-depth=27): Arithmetic expression evaluator using `match` with catamorphism patterns (`,[x]`) and guard clauses. Evaluates a balanced binary tree of 134,217,728 additions. Tests compiled pattern matching performance after alist fusion.
-
-## Parameters
-
-- gc disabled
-- optimization level: 3
-- chez scheme 10.0.0
-
-```
-── N-Queens (n=14) ─────────────────────────────────────────────
-  seed.scm (vau)                     compile:    0.000s  execute:    8.446s
-  Chez (native)                                         execute:   12.813s
-
-── Collatz: vau vs syntax-rules ─────────────────────────────────
-  seed.scm (vau)                     compile:    0.000s  execute:   10.316s
-  Chez (syntax-rules)                                   execute:   10.401s
-
-── Abacus: match catamorphism (depth=27) ──────────
-  seed.scm (vau match)               compile:    0.001s  tree:    1.176s  eval:    1.620s
-  Chez (SRFI-241 match)                                  tree:    1.331s  eval:    1.566s
+── Abacus2 — multi-operand match (ternary trees) ─────────────────
+  scheme --script seedink.scm abacus2.seed    compile:      n/as  tree: 0.803791520s  eval: 3.897080440s  wall:    5.337s
+  scheme --script abacus2.scm                                     tree:    0.810s  eval:    5.441s  wall:    6.879s
 
 ── Summary ────────────────────────────────────────────────────────
-Benchmark                Compile  Seed (vau)        Chez    Ratio
-────────────────────  ──────────  ──────────  ──────────  ───────
-N-Queens                  0.000s      8.446s     12.813s    0.66x
-Collatz                   0.000s     10.316s     10.401s    0.99x
-Abacus                    0.001s      2.798s      2.901s    0.96x
+Benchmark             Driver              Monotonic    Wall Clock
+────────────────────  ───────────────  ────────────  ────────────
+N-Queens              seedink               22.988s       23.598s
+N-Queens              scheme                23.003s       23.398s
+Collatz               seedink                9.996s       10.263s
+Collatz               scheme                10.307s       10.342s
+Abacus                seedink                2.825s        3.356s
+Abacus                scheme                 2.819s        3.108s
+Abacus2               seedink                4.701s        5.337s
+Abacus2               scheme                 6.251s        6.879s
+────────────────────  ───────────────  ────────────  ────────────
+TOTAL                 seedink               40.510s       42.554s
+TOTAL                 scheme                42.381s       43.727s
 ```
 
 ## Conclusion
