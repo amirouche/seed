@@ -9,8 +9,10 @@
 #   --special=N            Count-special limit              (default: 40000000)
 #   --abacus-expr-depth=N  Abacus balanced-tree depth       (default: 27)
 #   --abacus2-expr-depth=N Abacus2 balanced-tree depth      (default: 17)
+#   --gremlin-n=N          Gremlin graph vertices            (default: 20000)
+#   --gremlin-e=N          Gremlin edges per vertex          (default: 20)
 #   --iters=N              Repetitions per benchmark        (default: 1)
-#   --only=BENCH           Run only: nqueens, collatz, abacus, abacus2, or all (default: all)
+#   --only=BENCH           Run only: nqueens, collatz, abacus, abacus2, gremlin, or all (default: all)
 #   --drivers=LIST         Drivers to run: all, seedink, scheme, binink, binink-aot,
 #                          or comma-separated (default: all)
 #   --dev                  Enable dev mode (optimize-level 0, GC, profiling)
@@ -27,6 +29,8 @@ COLLATZ_LIMIT=20000000
 SPECIAL_LIMIT=40000000
 ABACUS_EXPR_DEPTH=27
 ABACUS2_EXPR_DEPTH=17
+GREMLIN_N=20000
+GREMLIN_E=20
 ITERS=1
 ONLY=all
 DRIVERS="all"
@@ -40,6 +44,8 @@ for arg in "$@"; do
     --special=*)           SPECIAL_LIMIT="${arg#*=}" ;;
     --abacus-expr-depth=*) ABACUS_EXPR_DEPTH="${arg#*=}" ;;
     --abacus2-expr-depth=*) ABACUS2_EXPR_DEPTH="${arg#*=}" ;;
+    --gremlin-n=*)         GREMLIN_N="${arg#*=}" ;;
+    --gremlin-e=*)         GREMLIN_E="${arg#*=}" ;;
     --iters=*)             ITERS="${arg#*=}" ;;
     --only=*)              ONLY="${arg#*=}" ;;
     --drivers=*)           DRIVERS="${arg#*=}" ;;
@@ -223,6 +229,8 @@ export SEED_COLLATZ="$COLLATZ_LIMIT"
 export SEED_SPECIAL="$SPECIAL_LIMIT"
 export SEED_ABACUS_DEPTH="$ABACUS_EXPR_DEPTH"
 export SEED_ABACUS2_DEPTH="$ABACUS2_EXPR_DEPTH"
+export SEED_GREMLIN_N="$GREMLIN_N"
+export SEED_GREMLIN_E="$GREMLIN_E"
 
 # ══════════════════════════════════════════════════════════════════════
 #  Prepare benchmark driver scripts
@@ -270,6 +278,16 @@ export SEED_ABACUS2_DEPTH="$ABACUS2_EXPR_DEPTH"
   fi
   printf '(run-benchmark)\n'
 } > "$TMP/ab2-chez.scm"
+
+{ printf '(import (chezscheme) (benchmarks gremlin gremlin))\n'
+  cat benchmarks/base.body.scm
+  if [ "$DEV" = true ]; then
+    printf '(dev! #t)\n'
+  else
+    printf '(dev! #f)\n'
+  fi
+  printf '(run-benchmark)\n'
+} > "$TMP/gr-chez.scm"
 
 # ══════════════════════════════════════════════════════════════════════
 #  Run
@@ -561,6 +579,40 @@ if [ "$ONLY" = "all" ] || [ "$ONLY" = "abacus2" ]; then
   # Stash scheme result for summary table
   printf "%s\t%s\t%s\t%s\t%s\n" "Abacus2|scheme --script abacus2.scm" "scheme" "n/a" "$chez_best" "$chez_wall" >> "$TMP/results.csv"
     fi
+  done
+  echo
+fi
+
+if [ "$ONLY" = "all" ] || [ "$ONLY" = "gremlin" ]; then
+  echo "── Gremlin — exercising (values news out) convention ──────────────"
+
+  for driver in "${SELECTED_DRIVERS[@]}"; do
+    if [ "$driver" = "seedink" ]; then
+  # Seed2 — uses seedink2.scm (not seedink.scm)
+  seed_best="" seed_wall=""
+  for (( i=1; i<=ITERS; i++ )); do
+    stdout_file="$TMP/gr-out.$i"
+    wall_start=$(date +%s%N)
+    scheme --script seedink2.scm benchmarks/gremlin/gremlin.seed2 >"$stdout_file" 2>&1
+    wall_end=$(date +%s%N)
+    wall_secs=$(awk "BEGIN{printf \"%.3f\", ($wall_end - $wall_start) / 1000000000}")
+    # Extract elapsed real time (first time value is the benchmark, second is run-file overhead)
+    et=$(sed -n 's/^[[:space:]]*\([0-9.]*\)s elapsed real time.*/\1/p' "$stdout_file" | head -1)
+    if [ -z "$seed_best" ] || awk "BEGIN{exit !($et < $seed_best)}"; then
+      seed_best="$et"
+      seed_wall="$wall_secs"
+    fi
+  done
+  printf "  %-42s  compile: %8ss  execute: %8ss  wall: %8ss" \
+         "scheme --script seedink2.scm gremlin.seed2" "n/a" "$seed_best" "$seed_wall"
+  [ "$ITERS" -gt 1 ] && printf "  (best of %d)" "$ITERS"
+  printf "\n"
+  printf "%s\t%s\t%s\t%s\t%s\n" "Gremlin|scheme --script seedink2.scm gremlin.seed2" "seedink" "n/a" "$seed_best" "$seed_wall" >> "$TMP/results.csv"
+
+    elif [ "$driver" = "scheme" ]; then
+      run_bench "Gremlin|scheme --script gremlin.scm" scheme "$TMP/gr-chez.scm" "$ITERS"
+    fi
+    # binink/binink-aot not supported for seed2 benchmarks
   done
   echo
 fi
