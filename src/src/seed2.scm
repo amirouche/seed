@@ -1536,26 +1536,35 @@
                   ;; No defines found after specialization — compile normally
                   (loop (cdr es) (cons (codegen* specialized ctx) done))
                   ;; Has defines — (values news out) convention
-                  (let* ([val-codes (map (lambda (v) (codegen* v ctx)) def-vals)]
-                         [body-code (codegen* stripped-body ctx)]
+                  ;; Check if stripped body references any defined names.
+                  ;; If so, compile it in the continuation (where names are bound)
+                  ;; rather than in the producer (where they aren't yet).
+                  (let* ([body-free (collect-free-vars stripped-body)]
+                         [body-refs-defs (or (exists (lambda (n) (memq n body-free)) def-names)
+                                             (references-env? stripped-body))]
+                         [val-codes (map (lambda (v) (codegen* v ctx)) def-vals)]
+                         [new-ctx (append (map (lambda (n) (cons n 'scheme-var)) def-names) ctx)]
+                         [body-code (if body-refs-defs
+                                        (codegen* stripped-body new-ctx)
+                                        (codegen* stripped-body ctx))]
                          ;; news = list of env-addition values
                          ;; out = list of return values (the stripped body result)
                          ;; Re-wrap with let/letrec layers so vals can reference
                          ;; let-bound variables (e.g., from destructuring defines)
-                         [inner-values `(values (list ,@val-codes)
-                                                (list ,body-code))]
+                         [inner-values (if body-refs-defs
+                                           `(values (list ,@val-codes) (list (void)))
+                                           `(values (list ,@val-codes) (list ,body-code)))]
                          [producer `(lambda ()
                                       ,(rewrap-codegen wrappers inner-values ctx))]
                          ;; Unpack news into env-addition names
-                         [new-ctx (append (map (lambda (n) (cons n 'scheme-var)) def-names) ctx)]
-                         [cont (codegen-begin (cdr es) new-ctx)]
+                         [cont-body (if body-refs-defs
+                                        `(begin ,body-code ,(codegen-begin (cdr es) new-ctx))
+                                        (codegen-begin (cdr es) new-ctx))]
                          [cwv `(call-with-values ,producer
                                  (lambda (news out)
                                    (call-with-values (lambda () (apply values news))
                                      (lambda ,def-names
-                                       (call-with-values (lambda () (apply values out))
-                                         (lambda (,(gensym "ret"))
-                                           ,cont))))))])
+                                       ,cont-body))))])
                     (if (null? done)
                         cwv
                         `(begin ,@(reverse done) ,cwv)))))]
