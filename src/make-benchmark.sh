@@ -636,9 +636,7 @@ if [ "$ONLY" = "all" ] || [ "$ONLY" = "gremlin" ]; then
   echo "── Gremlin — exercising (values news out) convention ──────────────"
 
   for driver in "${SELECTED_DRIVERS[@]}"; do
-    if [ "$driver" = "seedink" ]; then
-      run_bench "Gremlin|scheme --script seedink.scm gremlin.seed" seedink "benchmarks/gremlin/gremlin.seed" "$ITERS"
-    elif [ "$driver" = "seedink2" ]; then
+    if [ "$driver" = "seedink2" ]; then
       run_bench "Gremlin|scheme --script seedink2.scm gremlin.seed2" seedink2 "benchmarks/gremlin/gremlin.seed2" "$ITERS"
     elif [ "$driver" = "scheme" ]; then
       run_bench "Gremlin|scheme --script gremlin.scm" scheme "$TMP/gr-chez.scm" "$ITERS"
