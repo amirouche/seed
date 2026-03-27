@@ -29,6 +29,25 @@ extension. The `as!` operative compiles to proper Chez variables via
 `(values news out)`, producing code structurally equivalent to the Chez
 version's `let*` bindings.
 
+**Note on style:** Real Gremlin uses method chaining:
+
+```groovy
+g.V().has('age',gt(30)).as('a').out('knows').as('b').select('a','b')
+```
+
+In Scheme this would naturally be a threading macro (like Clojure's `->`)
+where each step transforms a traverser and `as` binds intermediate state:
+
+```scheme
+(~> g (V) (has 'age (gt 30)) (as 'a) (out 'knows) (as 'b) (select 'a 'b))
+```
+
+Our benchmark does not use this pipeline style — it uses explicit nested
+loops with `as!` calls at each level. A threading-based DSL where each
+step is a vau operative that both transforms the traverser *and* extends
+the caller's environment via `define env` would be a more faithful Gremlin
+analog, and a natural next step for this benchmark.
+
 The traversal core in Seed2:
 
 ```scheme
