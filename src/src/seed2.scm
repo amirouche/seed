@@ -2003,6 +2003,15 @@
              (lambda () (seed-eval-stmt (car es) env))
              (lambda (val new-env)
                (loop (cdr es) new-env val)))))]
+    ;; Named let: (let name ((var init) ...) body ...) → letrec
+    [(let ,name ,bindings . ,bodies)
+     (guard (symbol? name))
+     (let* ([params (map car bindings)]
+            [inits (map (lambda (b) (seed-eval (cadr b) env)) bindings)]
+            [proc (seed-eval `(lambda ,params ,@bodies) env)]
+            [env (cons (cons name proc) env)])
+       (apply proc inits))]
+    ;; Regular let
     [(let ,bindings . ,bodies)
      (let loop ([bs bindings] [env env])
        (if (null? bs)
