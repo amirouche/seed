@@ -3,7 +3,31 @@
   (import (chezscheme))
 
 ;; ============================================================
-;; Deterministic PRNG (linear congruential, purely functional)
+;; gremlin-fold — syntax-rules macro
+;; ============================================================
+;;
+;; (gremlin-fold name stream acc body)
+;;   Expands to fold-left that binds each element to name.
+;;
+;; Compare with the Seed2 vau version:
+;;   Seed2: 5-line vau operative (runtime code, compiler-specialized)
+;;   Chez:  4-line syntax-rules macro (compile-time pattern rewrite)
+
+;; Note: syntax-rules hygiene prevents the macro from introducing
+;; 'acc' — the user's body can't reference a macro-introduced binding.
+;; So we require the user to name the accumulator explicitly.
+;; This is a fundamental difference from Seed2's vau, which shares
+;; the caller's scope and doesn't have hygiene barriers.
+(define-syntax gremlin-fold
+  (syntax-rules ()
+    [(_ name stream-expr acc acc-expr body)
+     (fold-left
+       (lambda (acc name) body)
+       acc-expr
+       stream-expr)]))
+
+;; ============================================================
+;; Deterministic PRNG
 ;; ============================================================
 
 (define (rng-next s)
@@ -13,15 +37,11 @@
 ;; ============================================================
 ;; Graph representation (list-based, same as Seed2 version)
 ;; ============================================================
-;; Graph is a list of entries ordered by vertex id: ((group . neighbors) ...)
-;; Vertex i is at position i (accessed via list-ref).
 
 (define (make-graph n edges-per-vertex num-groups rng-seed)
-  ;; Build vertex entries with groups (no edges yet)
   (let build ([i 0] [s rng-seed] [acc '()])
     (if (= i n)
         (let ([entries (reverse acc)])
-          ;; Add random edges
           (let add-edges ([rest entries] [idx 0] [s2 s] [result '()])
             (if (null? rest)
                 (reverse result)
@@ -43,36 +63,28 @@
 (define (graph-group entry) (car entry))
 (define (graph-neighbors entry) (cdr entry))
 
+(define (out g v) (graph-neighbors (graph-ref g v)))
+
+(define (same-group? g a b)
+  (= (graph-group (graph-ref g a))
+     (graph-group (graph-ref g b))))
+
 (define (edge? g from to)
-  (memv to (graph-neighbors (graph-ref g from))))
+  (if (memv to (graph-neighbors (graph-ref g from))) #t #f))
 
 ;; ============================================================
-;; Triangle counting — plain let bindings (native Chez)
+;; Triangle counting — same nested gremlin-fold syntax as Seed2
 ;; ============================================================
 
-(define (count-triangles g n)
-  (let loop-a ([ai 0] [count 0])
-    (if (= ai n) count
-        (let* ([a-entry (graph-ref g ai)]
-               [a-grp (graph-group a-entry)]
-               [a-nbrs (graph-neighbors a-entry)])
-          (let loop-b ([bs a-nbrs] [count count])
-            (if (null? bs)
-                (loop-a (+ ai 1) count)
-                (let* ([bi (car bs)]
-                       [b-entry (graph-ref g bi)]
-                       [b-grp (graph-group b-entry)])
-                  (if (not (= a-grp b-grp))
-                      (loop-b (cdr bs) count)
-                      (let ([b-nbrs (graph-neighbors b-entry)])
-                        (let loop-c ([cs b-nbrs] [count count])
-                          (if (null? cs)
-                              (loop-b (cdr bs) count)
-                              (let ([ci (car cs)])
-                                (if (and (= a-grp (graph-group (graph-ref g ci)))
-                                         (edge? g ci ai))
-                                    (loop-c (cdr cs) (+ count 1))
-                                    (loop-c (cdr cs) count))))))))))))))
+(define (count-triangles g)
+  (gremlin-fold a (iota (length g)) acc 0
+    (gremlin-fold b (out g a) acc acc
+      (if (not (same-group? g a b)) acc
+          (gremlin-fold c (out g b) acc acc
+            (if (not (same-group? g a c)) acc
+                (if (edge? g c a)
+                    (+ acc 1)
+                    acc)))))))
 
 ;; ============================================================
 ;; Benchmark
@@ -87,13 +99,13 @@
     (if env-val (string->number env-val) 20)))
 
 (define (run-benchmark)
-  (display "Gremlin Graph Traversal Benchmark")
+  (display "Gremlin Graph Traversal Benchmark (gremlin-fold with syntax-rules)")
   (newline)
   (newline)
 
   ;; Correctness check
   (let ([g (make-graph 20 5 3 42)])
-    (let ([tri (count-triangles g 20)])
+    (let ([tri (count-triangles g)])
       (display "Small graph (20 vertices, 5 edges/v, 3 groups): ")
       (display tri)
       (display " triangles")
@@ -107,7 +119,7 @@
     (display GREMLIN-E)
     (display " edges/vertex, 10 groups")
     (newline)
-    (let ([tri (time (count-triangles g GREMLIN-N))])
+    (let ([tri (time (count-triangles g))])
       (display tri)
       (display " triangles")
       (newline))))
