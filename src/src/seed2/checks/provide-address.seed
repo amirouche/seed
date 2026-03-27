@@ -42,6 +42,6 @@
 (display (address-street home))
 (display " in city of ")
 (display (address-city home))
-(display " in country dubbbed ")
+(display " in country dubbed ")
 (display (address-country home))
 (newline)
