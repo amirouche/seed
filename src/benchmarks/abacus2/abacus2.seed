@@ -379,7 +379,7 @@
 
 (define abacus-depth
   (let ((env-val (getenv "SEED_ABACUS2_DEPTH")))
-    (if env-val (string->number env-val) 17)))
+    (if env-val (string->number env-val) 18)))
 
 (let ((tree (time (make-balanced-tree abacus-depth))))
   (display "Balanced ternary tree depth ")

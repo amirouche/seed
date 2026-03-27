@@ -7,8 +7,8 @@
 #   --nq-n=N               N-Queens board size            (default: 14)
 #   --collatz=N            Collatz search limit            (default: 20000000)
 #   --special=N            Count-special limit              (default: 40000000)
-#   --abacus-expr-depth=N  Abacus balanced-tree depth       (default: 27)
-#   --abacus2-expr-depth=N Abacus2 balanced-tree depth      (default: 17)
+#   --abacus-expr-depth=N  Abacus balanced-tree depth       (default: 29)
+#   --abacus2-expr-depth=N Abacus2 balanced-tree depth      (default: 18)
 #   --gremlin-n=N          Gremlin graph vertices            (default: 20000)
 #   --gremlin-e=N          Gremlin edges per vertex          (default: 20)
 #   --iters=N              Repetitions per benchmark        (default: 1)
@@ -27,8 +27,8 @@ set -euo pipefail
 NQ_N=14
 COLLATZ_LIMIT=20000000
 SPECIAL_LIMIT=40000000
-ABACUS_EXPR_DEPTH=27
-ABACUS2_EXPR_DEPTH=17
+ABACUS_EXPR_DEPTH=29
+ABACUS2_EXPR_DEPTH=18
 GREMLIN_N=20000
 GREMLIN_E=20
 ITERS=1

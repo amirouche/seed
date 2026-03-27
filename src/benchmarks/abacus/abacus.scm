@@ -26,7 +26,7 @@
 
 (define ABACUS-DEPTH
   (let ([env-val (getenv "SEED_ABACUS_DEPTH")])
-    (if env-val (string->number env-val) 27)))
+    (if env-val (string->number env-val) 29)))
 
 (define (run-benchmark)
   (display "Arithmetic Evaluator Benchmark (SRFI-241 match catamorphism)")
