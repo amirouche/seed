@@ -1,0 +1,175 @@
+;;; benchmark-gremlin-pipeline.seed2 — Flat Gremlin Pipeline DSL
+;;;
+;;; Demonstrates a flat pipeline syntax:
+;;;
+;;;   (pipe g
+;;;     (vertices)
+;;;     (as a)
+;;;     (flat-map out)
+;;;     (as b)
+;;;     (filter (same-group? g a b))
+;;;     (flat-map out)
+;;;     (as c)
+;;;     (filter (same-group? g a c))
+;;;     (filter (edge? g c a))
+;;;     (count))
+;;;
+;;; pipe is a vau that receives the step list unevaluated, walks it
+;;; via build-query to produce a nested letrec S-expression, then
+;;; evals it. All free variables (out, same-group?, etc.) are resolved
+;;; from the runtime env alist.
+
+;; ============================================================
+;; Pipeline compiler: flat steps → nested letrec loops
+;; ============================================================
+
+(define loop-names (list 'loop0 'loop1 'loop2 'loop3 'loop4 'loop5))
+
+(define build-query
+  (lambda (steps last-bound stream-expr depth)
+    (if (null? steps) 'acc
+        (let ((step (car steps)) (rest-steps (cdr steps)))
+          (let ((kw (car step)))
+            (if (eq? kw 'as)
+                (let ((as-name (cadr step))
+                      (loop-sym (list-ref loop-names depth)))
+                  (let ((inner (build-query rest-steps as-name stream-expr (+ depth 1))))
+                    (list 'letrec
+                          (list (list loop-sym
+                                      (list 'lambda (list 'items 'acc)
+                                            (list 'if (list 'null? 'items) 'acc
+                                                  (list 'let (list (list as-name (list 'car 'items)))
+                                                        (list loop-sym (list 'cdr 'items)
+                                                              inner))))))
+                          (list loop-sym stream-expr 'acc))))
+
+            (if (eq? kw 'flat-map)
+                (let ((fn-sym (cadr step)))
+                  (build-query rest-steps last-bound
+                               (list fn-sym 'g last-bound) depth))
+
+            (if (eq? kw 'filter)
+                (list 'if (list 'not (cadr step)) 'acc
+                      (build-query rest-steps last-bound stream-expr depth))
+
+            (if (eq? kw 'count)
+                '(+ acc 1)
+                (build-query rest-steps last-bound stream-expr depth))))))))))
+
+(define pipe
+  (vau (g-expr . all-steps) env
+    (let ((g (eval g-expr env)))
+      ;; Skip (vertices), build query from remaining steps
+      (let ((query (build-query (cdr all-steps) #f '(iota (length g)) 0)))
+        ;; Wrap with (let ((acc 0)) ...) to provide initial accumulator
+        (let ((wrapped (list 'let (list (list 'acc 0)) query)))
+          ;; Add g to the env alist so seed-eval can find it
+          (eval wrapped (cons (cons 'g g) env)))))))
+
+;; ============================================================
+;; Graph utilities
+;; ============================================================
+
+(define rng-next
+  (lambda (s)
+    (let ((next (remainder (+ (* s 1103515245) 12345) 2147483648)))
+      (if (< next 0) (- 0 next) next))))
+
+(define make-graph
+  (lambda (n edges-per-vertex num-groups rng-seed)
+    (let build ((i 0) (s rng-seed) (acc '()))
+      (if (= i n)
+          (let ((entries (reverse acc)))
+            (let add-edges ((rest entries) (idx 0) (s2 s) (result '()))
+              (if (null? rest) (reverse result)
+                  (let ((entry (car rest)))
+                    (let add-e ((j 0) (s3 s2) (nbrs '()))
+                      (if (= j edges-per-vertex)
+                          (add-edges (cdr rest) (+ idx 1) s3
+                                     (cons (cons (car entry) nbrs) result))
+                          (let ((s4 (rng-next s3)))
+                            (let ((target (remainder s4 n)))
+                              (if (= target idx)
+                                  (add-e j s4 nbrs)
+                                  (add-e (+ j 1) s4 (cons target nbrs)))))))))))
+          (let ((s2 (rng-next s)))
+            (build (+ i 1) s2
+                   (cons (list (remainder s2 num-groups)) acc)))))))
+
+(define graph-ref
+  (lambda (g v) (list-ref g v)))
+
+(define graph-group
+  (lambda (entry) (car entry)))
+
+(define graph-neighbors
+  (lambda (entry) (cdr entry)))
+
+(define out
+  (lambda (g v) (graph-neighbors (graph-ref g v))))
+
+(define same-group?
+  (lambda (g a b)
+    (= (graph-group (graph-ref g a))
+       (graph-group (graph-ref g b)))))
+
+(define edge?
+  (lambda (g from to)
+    (if (memv to (graph-neighbors (graph-ref g from))) #t #f)))
+
+;; ============================================================
+;; Triangle counting — FLAT PIPELINE
+;; ============================================================
+
+(display "Gremlin Pipeline Benchmark (flat pipe DSL)")
+(newline)
+(newline)
+
+(let ((g (make-graph 20 5 3 42)))
+  (let ((tri
+          (pipe g
+            (vertices)
+            (as a)
+            (flat-map out)
+            (as b)
+            (filter (same-group? g a b))
+            (flat-map out)
+            (as c)
+            (filter (same-group? g a c))
+            (filter (edge? g c a))
+            (count))))
+    (display "Small graph (20 vertices, 5 edges/v, 3 groups): ")
+    (display tri)
+    (display " triangles")
+    (newline)))
+
+(define gremlin-n
+  (let ((env-val (getenv "SEED_GREMLIN_N")))
+    (if env-val (string->number env-val) 20000)))
+
+(define gremlin-e
+  (let ((env-val (getenv "SEED_GREMLIN_E")))
+    (if env-val (string->number env-val) 20)))
+
+(let ((g (make-graph gremlin-n gremlin-e 10 12345)))
+  (display "Graph: ")
+  (display gremlin-n)
+  (display " vertices, ")
+  (display gremlin-e)
+  (display " edges/vertex, 10 groups")
+  (newline)
+  (let ((tri (time
+               (pipe g
+                 (vertices)
+                 (as a)
+                 (flat-map out)
+                 (as b)
+                 (filter (same-group? g a b))
+                 (flat-map out)
+                 (as c)
+                 (filter (same-group? g a c))
+                 (filter (edge? g c a))
+                 (count)))))
+    (display tri)
+    (display " triangles")
+    (newline)))
