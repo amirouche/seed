@@ -365,6 +365,27 @@
     [(vau ,_ ,_ ,[body]) body]
     [,_ #f]))
 
+;; Collect all free variable names referenced in the AST.
+(define (collect-free-vars ast)
+  (match ast
+    [(var ,n free) (list n)]
+    [(var ,_ ,_) '()]
+    [(const ,_) '()]
+    [(quot ,_) '()]
+    [(dyn-env) '()]
+    [(if ,[t] ,[c] ,[a]) (append t c a)]
+    [(begin ,[e] ...) (apply append e)]
+    [(define ,[env-e] ,[name-e] ,[val-e]) (append env-e name-e val-e)]
+    [(eval ,[e] ,[ev]) (append e ev)]
+    [(time ,[e]) e]
+    [(call ,[op] (,[a] ...)) (apply append (cons op a))]
+    [(let ((,_ ,[v]) ...) ,[body]) (apply append (append v (list body)))]
+    [(letrec ((,_ ,[v]) ...) ,[body]) (apply append (append v (list body)))]
+    [(lam ,_ ,[body]) body]
+    [(wrap ,[inner]) inner]
+    [(vau ,_ ,_ ,[body]) body]
+    [,_ '()]))
+
 ;; Does the AST reference the dynamic environment?
 ;; Only checks for (dyn-env) nodes or (eval ...) nodes
 (define (references-env? ast)
@@ -1236,8 +1257,19 @@
                               (not (equal? a '(quot ())))))
                        arg-asts))
           (let ([lam-ast (cdr (assq n lenv))])
-            (or (inline-lambda lam-ast arg-asts subst ep ctx lenv (- ifuel 1))
-                `(call (var ,n local) ,arg-asts)))]
+            ;; Try inlining, but reject if the result contains free var
+            ;; references that were local params inside the lambda.
+            ;; This prevents broken scoping when inlining loop bodies
+            ;; that use env-ref for variables only in scope inside the loop.
+            (let ([result (inline-lambda lam-ast arg-asts subst ep ctx lenv (- ifuel 1))])
+              (if (and result
+                       (not (match lam-ast
+                              [(lam ,params ,_)
+                               (let ([free-in-result (collect-free-vars result)])
+                                 (exists (lambda (p) (memq p free-in-result)) params))]
+                              [,_ #f])))
+                  result
+                  `(call (var ,n local) ,arg-asts))))]
          [else `(call (var ,n local) ,arg-asts)]))]
 
     ;; General call fallback
