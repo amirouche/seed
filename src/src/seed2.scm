@@ -1527,6 +1527,22 @@
                     (if (null? done)
                         cwv
                         `(begin ,@(reverse done) ,cwv)))))]
+           ;; Raw define-env with static name — compile the mutation AND
+           ;; add a let binding so subsequent code can reference the name
+           ;; as a direct Chez variable instead of (env-ref 'name env).
+           [(define ,env-e (quot ,def-name) ,val-e)
+            (guard (and (symbol? def-name)
+                        (not (null? (cdr es)))))  ;; must have continuation
+            (let* ([def-code (codegen* e ctx)]
+                   [val-code (codegen* val-e ctx)]
+                   [new-ctx (cons (cons def-name 'scheme-var) ctx)]
+                   [cont (codegen-begin (cdr es) new-ctx)])
+              (let ([result `(begin ,@(reverse done) ,def-code
+                                    (let ([,def-name ,val-code])
+                                      ,cont))])
+                (if (null? done) `(begin ,def-code (let ([,def-name ,val-code]) ,cont))
+                    result)))]
+
            ;; Expression with sub-expression vau call — hoist it out
            [,_
             (let ([hoisted (and (not (null? (cdr es)))
