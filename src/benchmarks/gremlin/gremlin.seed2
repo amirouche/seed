@@ -1,25 +1,39 @@
-;;; benchmark-gremlin.seed2 — Graph Traversal with Environment-Threading
+;;; benchmark-gremlin.seed2 — Graph Traversal with gremlin-fold
 ;;;
-;;; Exercises the (values news out) calling convention by implementing
-;;; Gremlin-style as! steps that bind traversal state into the caller's
-;;; scope via (define env ...).
+;;; gremlin-fold is a 5-line vau operative that loops over a stream,
+;;; binds each element into the caller's scope via (define env ...),
+;;; and evaluates a body expression for each element. The compiler
+;;; fully specializes it: zero seed-eval, zero env-ref at call sites.
+;;;
+;;; The equivalent Chez version uses a syntax-rules macro.
+;;; Both produce the same nested fold-left code. The difference:
+;;; the vau is written like a function, the macro requires understanding
+;;; syntax-rules, hygiene, and compile-time pattern matching.
 ;;;
 ;;; Computes: triangle count in a random graph where all three vertices
 ;;; share the same group label.
 
 ;; ============================================================
-;; DSL: Gremlin-style as! step
+;; gremlin-fold — the entire DSL in 5 lines
 ;; ============================================================
-;; Each (as! name expr) triggers (values news out) at compile time,
-;; binding the result as a proper Chez variable in the caller's scope.
+;;
+;; (gremlin-fold name stream acc body)
+;;   Iterates stream. Binds each element to name via define env.
+;;   Evaluates body for each element. body returns new acc.
+;;   Returns final acc.
 
-(define as! (vau (name val-expr) env
-  (define env name (eval val-expr env))))
-
-(define and2 (vau (a b) e (if (eval a e) (eval b e) #f)))
+(define gremlin-fold
+  (vau (name stream-expr acc-expr body) env
+    (letrec
+        ((loop (lambda (items acc)
+                 (if (null? items) acc
+                     (begin
+                       (define env name (car items))
+                       (loop (cdr items) (eval body env)))))))
+      (loop (eval stream-expr env) (eval acc-expr env)))))
 
 ;; ============================================================
-;; Deterministic PRNG (linear congruential, purely functional)
+;; Deterministic PRNG
 ;; ============================================================
 
 (define rng-next
@@ -30,21 +44,12 @@
 ;; ============================================================
 ;; Graph representation
 ;; ============================================================
-;; Graph is a list of entries ordered by vertex id: ((group . neighbors) ...)
-;; Vertex i is at position i in the list.
-;; - group: integer label 0..G-1
-;; - neighbors: list of vertex indices
-;;
-;; For O(1)-ish access we also build a neighbor-set representation:
-;; each vertex stores a sorted neighbor list for fast edge? checks.
 
 (define make-graph
   (lambda (n edges-per-vertex num-groups rng-seed)
-    ;; Build vertex entries with groups (no edges yet)
     (let build ((i 0) (s rng-seed) (acc '()))
       (if (= i n)
           (let ((entries (reverse acc)))
-            ;; Add random edges
             (let add-edges ((rest entries) (idx 0) (s2 s) (result '()))
               (if (null? rest)
                   (reverse result)
@@ -62,73 +67,56 @@
             (build (+ i 1) s2
                    (cons (list (remainder s2 num-groups)) acc)))))))
 
-;; list-ref is O(n) but we call it once per vertex per loop level,
-;; not inside the innermost loop. The hot path uses pre-fetched data.
-
 (define graph-ref
-  (lambda (g v)
-    (list-ref g v)))
+  (lambda (g v) (list-ref g v)))
 
 (define graph-group
-  (lambda (entry)
-    (car entry)))
+  (lambda (entry) (car entry)))
 
 (define graph-neighbors
-  (lambda (entry)
-    (cdr entry)))
+  (lambda (entry) (cdr entry)))
+
+(define out
+  (lambda (g v) (graph-neighbors (graph-ref g v))))
+
+(define same-group?
+  (lambda (g a b)
+    (= (graph-group (graph-ref g a))
+       (graph-group (graph-ref g b)))))
 
 (define edge?
   (lambda (g from to)
-    (memv to (graph-neighbors (graph-ref g from)))))
+    (if (memv to (graph-neighbors (graph-ref g from))) #t #f)))
 
 ;; ============================================================
-;; Triangle counting — Gremlin-style with as! bindings
+;; Triangle counting — nested gremlin-fold
 ;; ============================================================
-;; For each vertex a, follow edges to b, then to c, check c→a.
-;; Filter: all three must share the same group label.
 ;;
-;; The as! calls bind the looked-up entry/group data so that
-;; inner loops reference proper Chez variables, not repeated lookups.
+;; Three nested folds: vertices → neighbors → neighbors-of-neighbors.
+;; Each gremlin-fold binds the current element (a, b, c) into scope
+;; via define env. Filters use plain if on the bound variables.
 
 (define count-triangles
-  (lambda (g n)
-    (let loop-a ((ai 0) (count 0))
-      (if (= ai n) count
-          (begin
-            (as! a-entry (graph-ref g ai))
-            (as! a-grp (graph-group a-entry))
-            (as! a-nbrs (graph-neighbors a-entry))
-            (let loop-b ((bs a-nbrs) (count count))
-              (if (null? bs)
-                  (loop-a (+ ai 1) count)
-                  (begin
-                    (as! bi (car bs))
-                    (as! b-entry (graph-ref g bi))
-                    (as! b-grp (graph-group b-entry))
-                    (if (not (= a-grp b-grp))
-                        (loop-b (cdr bs) count)
-                        (begin
-                          (as! b-nbrs (graph-neighbors b-entry))
-                          (let loop-c ((cs b-nbrs) (count count))
-                            (if (null? cs)
-                                (loop-b (cdr bs) count)
-                                (begin
-                                  (as! ci (car cs))
-                                  (if (and2 (= a-grp (graph-group (graph-ref g ci)))
-                                            (edge? g ci ai))
-                                      (loop-c (cdr cs) (+ count 1))
-                                      (loop-c (cdr cs) count)))))))))))))))
+  (lambda (g)
+    (gremlin-fold a (iota (length g)) 0
+      (gremlin-fold b (out g a) acc
+        (if (not (same-group? g a b)) acc
+            (gremlin-fold c (out g b) acc
+              (if (not (same-group? g a c)) acc
+                  (if (edge? g c a)
+                      (+ acc 1)
+                      acc))))))))
 
 ;; ============================================================
-;; Correctness check (small graph)
+;; Correctness check
 ;; ============================================================
 
-(display "Gremlin Graph Traversal Benchmark (exercises (values news out) convention)")
+(display "Gremlin Graph Traversal Benchmark (gremlin-fold with vau)")
 (newline)
 (newline)
 
 (let ((g (make-graph 20 5 3 42)))
-  (let ((tri (count-triangles g 20)))
+  (let ((tri (count-triangles g)))
     (display "Small graph (20 vertices, 5 edges/v, 3 groups): ")
     (display tri)
     (display " triangles")
@@ -153,7 +141,7 @@
   (display gremlin-e)
   (display " edges/vertex, 10 groups")
   (newline)
-  (let ((tri (time (count-triangles g gremlin-n))))
+  (let ((tri (time (count-triangles g))))
     (display tri)
     (display " triangles")
     (newline)))
