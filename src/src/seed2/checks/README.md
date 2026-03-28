@@ -1,6 +1,6 @@
 # Seed2 Checks
 
-End-to-end tests for the Seed2 compiler. Each test is a `.seed2.scm`
+End-to-end tests for the Seed2 compiler.  Each test is a `.seed2.scm`
 program compiled through `seedink2.scm` and compared against expected
 output.
 
@@ -28,7 +28,7 @@ Tests without an `.expected.txt` file are SKIPped by `run-checks.sh`.
 | `provide-with-eval` | `provide` macro via runtime eval fallback path |
 | `define-record-type` | `define-record-type` as a vau macro |
 | `aif` | Hygienic anaphoric if via vau + `define env` |
-| `walrus` | Python-style walrus operator (`:=`) via vau (SKIP — hangs at runtime) |
+| `walrus` | Python-style walrus operator (`:=`) via vau (SKIP -- see [WALRUS-TODO.md](WALRUS-TODO.md)) |
 
 ## Running
 
@@ -38,11 +38,13 @@ bash run-checks.sh
 
 ## Regenerating compiled output
 
+Note: `dump-file` writes to stderr, so use `2>` (not `>`).
+
 ```bash
 # From the src/ directory:
 for f in src/seed2/checks/*.seed2.scm; do
   name="$(basename "$f" .seed2.scm)"
   scheme --script seedink2.scm --dump "$f" \
-    > "src/seed2/checks/${name}.compiled.scm"
+    2> "src/seed2/checks/${name}.compiled.scm"
 done
 ```
