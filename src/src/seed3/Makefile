@@ -2,7 +2,7 @@ ROOT := $(shell cd ../.. && pwd)
 SEEDINK := $(ROOT)/seedink3.scm
 HERE := $(shell pwd)
 
-.PHONY: help check check-unit benchmark
+.PHONY: help check check-unit benchmark compare
 
 help:
 	@echo "Seed3 Makefile targets:"
@@ -10,6 +10,7 @@ help:
 	@echo "  check       Run 152 unit tests then 7 end-to-end tests"
 	@echo "  check-unit  Run 152 unit tests (parse, annotate, classify, bta, codegen)"
 	@echo "  benchmark   Run n-queen, collatz, abacus, and gremlin-pipeline benchmarks"
+	@echo "  compare     Compare Chez, Seed3, and Python3 on n-queen and collatz"
 	@echo "  help        Show this message"
 
 check: check-unit
@@ -30,3 +31,6 @@ benchmark:
 	@echo ""
 	@echo "── gremlin-pipeline ──"
 	cd $(ROOT) && scheme --script $(SEEDINK) $(HERE)/benchmarks/gremlin-pipeline.seed3
+
+compare:
+	bash $(HERE)/benchmarks/run-comparison.sh
