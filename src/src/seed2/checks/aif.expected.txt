@@ -1,0 +1,7 @@
+--- aif examples ---
+found: (3 4 5)
+value: 2
+false branch
+outer it: 42
+inner it: 99
+result: 42

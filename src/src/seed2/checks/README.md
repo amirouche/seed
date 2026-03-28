@@ -11,6 +11,9 @@ output.
 | `*.seed2.scm` | Seed2 source program |
 | `*.compiled.scm` | Compiled Chez Scheme output (`seedink2.scm --dump`) |
 | `*.expected.txt` | Expected stdout when the program is run |
+| `*.chez.scm` | Equivalent Chez Scheme program (for comparison) |
+
+Tests without an `.expected.txt` file are SKIPped by `run-checks.sh`.
 
 ## Tests
 
@@ -24,6 +27,8 @@ output.
 | `provide-address` | `provide` macro with encapsulation-based record type |
 | `provide-with-eval` | `provide` macro via runtime eval fallback path |
 | `define-record-type` | `define-record-type` as a vau macro |
+| `aif` | Hygienic anaphoric if via vau + `define env` |
+| `walrus` | Python-style walrus operator (`:=`) via vau (SKIP — hangs at runtime) |
 
 ## Running
 
