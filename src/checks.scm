@@ -964,6 +964,18 @@
            (fizzbuzz-one 5)  (fizzbuzz-one 7)))
   '(fizzbuzz fizz buzz 7))
 
+;; --- Higher-order applicative: identity vs quote ---
+(printf "── Higher-order applicative (identity vs quote) ──~n")
+(test-run-env "ho-applicative/identity"
+  '(let ((foo (lambda (bar) (bar (+ 2 2)))))
+     (foo (lambda (x) x)))
+  4)
+
+(test-run-env "ho-applicative/quote-vau"
+  '(let ((foo (lambda (bar) (bar (+ 2 2)))))
+     (foo (vau (x) #f x)))
+  '(+ 2 2))
+
 ;; --- Step 6 Summary ---
 (printf "~n── Step 6 Summary ──~n")
 (printf "  ~a/~a passed" test-pass test-count)

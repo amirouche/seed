@@ -1401,13 +1401,23 @@
      (guard (memq name *primitives*))
      `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
 
-    ;; Call to other local (e.g., lambda parameter) → (name args...)
+    ;; Call to other local (e.g., lambda parameter) — may be operative or applicative
     [(call (var ,name local) ,args)
-     `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
+     (let ([arg-codes (map (lambda (a) (codegen* a ctx)) args)]
+           [syntax-args (map (lambda (a) `',(ast->src* a)) args)])
+       `(let ([proc ,name])
+          (if (and (pair? proc) (eq? (car proc) 'operative))
+              ((cdr proc) env ,@syntax-args)
+              (proc ,@arg-codes))))]
 
-    ;; Call to other free → (name args...)
+    ;; Call to other free — may be operative or applicative
     [(call (var ,name free) ,args)
-     `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
+     (let ([arg-codes (map (lambda (a) (codegen* a ctx)) args)]
+           [syntax-args (map (lambda (a) `',(ast->src* a)) args)])
+       `(let ([proc ,name])
+          (if (and (pair? proc) (eq? (car proc) 'operative))
+              ((cdr proc) env ,@syntax-args)
+              (proc ,@arg-codes))))]
 
     ;; Generic call — runtime dispatch
     [(call ,op ,args)
