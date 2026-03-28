@@ -28,7 +28,7 @@ Tests without an `.expected.txt` file are SKIPped by `run-checks.sh`.
 | `provide-with-eval` | `provide` macro via runtime eval fallback path |
 | `define-record-type` | `define-record-type` as a vau macro |
 | `aif` | Hygienic anaphoric if via vau + `define env` |
-| `walrus` | Python-style walrus operator (`:=`) via vau (SKIP -- see [WALRUS-TODO.md](WALRUS-TODO.md)) |
+| `walrus` | Python-style walrus operator (`:=`) via vau (see [WALRUS-TODO.md](WALRUS-TODO.md) for limitations) |
 
 ## Running
 
