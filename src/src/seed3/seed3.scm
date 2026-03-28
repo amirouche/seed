@@ -2023,8 +2023,13 @@
                     ,(wrap-operative-call-with-environment
                        locals `((cdr proc) env ,@syntax-arguments))
                     (proc ,@argument-codes))))
-           ;; No env in scope — direct call (pure lambda context)
-           `(,name ,@argument-codes)))]
+           ;; No env in scope — still check for operative (may be passed as argument)
+           (let* ([syntax-arguments
+                    (map (lambda (a) `',(ast-to-source-form a)) arguments)])
+             `(let ([proc ,name])
+                (if (and (pair? proc) (eq? (car proc) 'operative))
+                    ((cdr proc) '() ,@syntax-arguments)
+                    (proc ,@argument-codes))))))]
 
     ;; Call to free — may be operative or applicative
     [(call (var ,name free) ,arguments)
