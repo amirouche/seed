@@ -1,6 +1,6 @@
 #!r6rs
 ;;;
-;;; Seed Nanopass Compiler v3 — Unified Vau
+;;; Seed Nanopass style Compiler v3 — Unified Vau
 ;;;
 ;;; R6RS Library Interface
 ;;;
