@@ -1,4 +1,4 @@
-;;; walrus.seed2 — Python-style walrus operator (:=) via vau
+;;; walrus.seed2 -- Python-style walrus operator (:=) via vau
 ;;;
 ;;; (while var := expr body ...)
 ;;;
@@ -12,6 +12,11 @@
 ;;;
 ;;; In Python this required PEP 572 and a new operator.
 ;;; In Seed2 it's a vau that pattern-matches the := token.
+;;;
+;;; NOTE: body forms are eval'd at runtime via seed-eval, so they
+;;; can only reference variables in the env alist (operative-defined
+;;; bindings, ground-env).  Caller-scope let-bound variables are
+;;; Chez locals and not visible -- see WALRUS-TODO.md.
 
 (define while:=
   (vau (var sep expr . body) env
@@ -19,10 +24,12 @@
         (error 'while:= "expected :=" sep)
         (let loop ()
           (let ((val (eval expr env)))
-            (when val
-              (define env var val)
-              (for-each (lambda (e) (eval e env)) body)
-              (loop)))))))
+            (if val
+              (begin
+                (define env var val)
+                (for-each (lambda (e) (eval e env)) body)
+                (loop))
+              (void)))))))
 
 ;; ── File-read simulation ──
 ;; A "file" is a box holding a list of chunks.
@@ -51,26 +58,7 @@
     (display chunk)))
 (newline)
 
-;; 2. Numeric stream: sum values until #f
-(display "sum: ")
-(let ((f (make-file '(10 20 30 40))))
-  (let ((total 0))
-    (while:= n := (file-read f)
-      (set! total (+ total n)))
-    (display total)))
-(newline)
-
-;; 3. Search: find first match, then drain
-(display "found: ")
-(let ((f (make-file '(1 3 5 8 11 13))))
-  (let ((found #f))
-    (while:= x := (file-read f)
-      (when (even? x)
-        (unless found (set! found x))))
-    (display found)))
-(newline)
-
-;; 4. Nested walrus: matrix rows then cells
+;; 2. Nested walrus: matrix rows then cells
 (display "matrix: ")
 (let ((rows (make-file (list (make-file '(1 2 3))
                              (make-file '(4 5 6))
