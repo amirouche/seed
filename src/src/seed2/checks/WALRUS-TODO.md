@@ -22,7 +22,7 @@ The `if`-based version of `while:=` works:
 ```
 
 Here `if` is compiled directly.  The compiler handles `define env`,
-`for-each`, and `loop` as Chez code — no runtime dispatch needed.
+`for-each`, and `loop` as Chez code --no runtime dispatch needed.
 
 ## What fails
 
@@ -44,7 +44,7 @@ two interop gaps:
 When the specializer inlines the vau call at the call site, it
 substitutes vau parameters into the syntax arguments:
 
-- `var` (bound to `chunk`) becomes `'chunk` — a quoted form where
+- `var` (bound to `chunk`) becomes `'chunk` --a quoted form where
   `(define env ...)` expects a bare symbol
 - `body` (bound to `((display chunk))`) gets double-quoted
 
@@ -55,10 +55,10 @@ fall through to the runtime operative path.
 
 ### Gap 2: Two env representations collide
 
-Compiled Chez code uses **mutable alists** — `(define env var val)` is
+Compiled Chez code uses **mutable alists** --`(define env var val)` is
 compiled to `set-car!/set-cdr!` mutations on the env cons cell.
 
-`seed-eval-stmt` uses **immutable threading** — `(define name val)`
+`seed-eval-stmt` uses **immutable threading** --`(define name val)`
 returns `(values v (cons (cons name v) env))`, building a new env.
 
 When an operative like `when` processes body forms via `seed-eval-stmt`,
@@ -66,7 +66,7 @@ the `(define env var val)` form mutates the target alist (found by
 resolving the symbol `env`), but `seed-eval-stmt`'s threaded env is a
 separate copy.  Subsequent forms like `(for-each ... body)` create
 lambdas that capture the symbol `env`, which resolves to the mutated
-alist — but that alist and the threaded env disagree about which
+alist --but that alist and the threaded env disagree about which
 bindings exist.
 
 Result: `chunk` is defined in one representation but not found in the
@@ -76,23 +76,23 @@ other → `env-ref-unbox: unbound with irritant chunk`.
 
 These fixes are in `seed2.scm` and enable all non-walrus tests:
 
-1. **Operative dispatch in codegen** — local/free variable calls emit
+1. **Operative dispatch in codegen** --local/free variable calls emit
    `(if (operative? proc) ...)` runtime dispatch instead of assuming
    all callees are applicatives.
 
-2. **Env extension at dispatch sites** — before calling an operative,
+2. **Env extension at dispatch sites** --before calling an operative,
    extend `env` with Chez locals from `ctx` that appear in the syntax
    args, so `seed-eval` can resolve them.
 
-3. **`when`/`unless`/`eval`/`set!` in ground-env** — runtime
+3. **`when`/`unless`/`eval`/`set!` in ground-env** --runtime
    operatives and procedures needed by `seed-eval` when processing
    syntax args from compiled vau bodies.
 
-4. **`has-unknown-operative-calls?` guard** — skip vau specialization
+4. **`has-unknown-operative-calls?` guard** --skip vau specialization
    when the body calls potential operatives, avoiding syntax arg
    mangling.
 
-5. **3-arg `define` in `seed-eval-stmt`** — thread env correctly when
+5. **3-arg `define` in `seed-eval-stmt`** --thread env correctly when
    `(define env name val)` appears in `seed-eval-stmt` body forms.
 
 ## Path forward

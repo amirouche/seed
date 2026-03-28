@@ -12,71 +12,33 @@
                                                               (let ([val (seed-eval
                                                                            expr
                                                                            env)])
-                                                                (let ([proc (env-ref
-                                                                              'when
-                                                                              env)])
-                                                                  (if (and (pair?
-                                                                             proc)
-                                                                           (eq? (car proc)
-                                                                                'operative))
+                                                                (when val
+                                                                  (let ([v val])
+                                                                    (set! env
+                                                                      (cons
+                                                                        (cons
+                                                                          var
+                                                                          v)
+                                                                        env))
+                                                                    (set! %news
+                                                                      (cons
+                                                                        (cons
+                                                                          var
+                                                                          v)
+                                                                        %news))
+                                                                    v)
+                                                                  (for-each
+                                                                    (lambda (e)
                                                                       (let ([env (list*
                                                                                    (cons
-                                                                                     'val
-                                                                                     val)
-                                                                                   (cons
-                                                                                     'env
-                                                                                     env)
-                                                                                   (cons
-                                                                                     'var
-                                                                                     var)
-                                                                                   (cons
-                                                                                     'body
-                                                                                     body)
-                                                                                   (cons
-                                                                                     'loop
-                                                                                     loop)
+                                                                                     'e
+                                                                                     e)
                                                                                    env)])
-                                                                        ((cdr proc)
-                                                                          env
-                                                                          'val
-                                                                          '(define env
-                                                                             var
-                                                                             val)
-                                                                          '(for-each
-                                                                             (lambda (e)
-                                                                               (eval
-                                                                                 e
-                                                                                 env))
-                                                                             body)
-                                                                          '(loop)))
-                                                                      (proc
-                                                                        val
-                                                                        (let ([v val])
-                                                                          (set! env
-                                                                            (cons
-                                                                              (cons
-                                                                                var
-                                                                                v)
-                                                                              env))
-                                                                          (set! %news
-                                                                            (cons
-                                                                              (cons
-                                                                                var
-                                                                                v)
-                                                                              %news))
-                                                                          v)
-                                                                        (for-each
-                                                                          (lambda (e)
-                                                                            (let ([env (list*
-                                                                                         (cons
-                                                                                           'e
-                                                                                           e)
-                                                                                         env)])
-                                                                              (seed-eval
-                                                                                e
-                                                                                env)))
-                                                                          body)
-                                                                        (loop)))))))])
+                                                                        (seed-eval
+                                                                          e
+                                                                          env)))
+                                                                    body)
+                                                                  (loop)))))])
                                              (loop)))])
                           (values (reverse %news) %result)))))]
          [make-file (lambda (chunks) (list chunks))]
@@ -85,17 +47,7 @@
                         (if (null? chunks)
                             #f
                             (let ([chunk (car chunks)])
-                              (begin
-                                (let ([proc set-car!])
-                                  (if (and (pair? proc)
-                                           (eq? (car proc) 'operative))
-                                      (let ([env (list*
-                                                   (cons 'f f)
-                                                   (cons 'chunks chunks)
-                                                   env)])
-                                        ((cdr proc) env 'f '(cdr chunks)))
-                                      (proc f (cdr chunks))))
-                                chunk)))))])
+                              (begin (set-car! f (cdr chunks)) chunk)))))])
   (let ([env (list*
                (cons 'while:= while:=)
                (cons 'make-file make-file)
@@ -133,36 +85,44 @@
                         (letrec ([loop (lambda ()
                                          (let ([env (list* env)])
                                            (let ([val (file-read f)])
-                                             (let ([proc (env-ref
-                                                           'when
-                                                           env)])
-                                               (if (and (pair? proc)
-                                                        (eq? (car proc)
-                                                             'operative))
+                                             (when val
+                                               (let ([target env]
+                                                     [name 'n]
+                                                     [v val])
+                                                 (set-cdr!
+                                                   target
+                                                   (cons
+                                                     (car target)
+                                                     (cdr target)))
+                                                 (set-car!
+                                                   target
+                                                   (cons name v))
+                                                 v)
+                                               (for-each
+                                                 (lambda (e)
                                                    (let ([env (list*
-                                                                (cons
-                                                                  'val
-                                                                  val)
-                                                                (cons
-                                                                  'env
-                                                                  env)
-                                                                (cons
-                                                                  'loop
-                                                                  loop)
+                                                                (cons 'e e)
                                                                 env)])
-                                                     ((cdr proc) env 'val
-                                                       '(define env 'n val)
-                                                       '(for-each
-                                                          (lambda (e)
-                                                            (eval e env))
-                                                          '((set! total
-                                                              (+ total
-                                                                 n))))
-                                                       '(loop)))
-                                                   (proc
-                                                     val
+                                                     (seed-eval e env)))
+                                                 '((set! total
+                                                     (+ total n))))
+                                               (loop)))))])
+                          (loop))
+                        (display total))))
+                  (begin
+                    (newline)
+                    (begin
+                      (display '"found: ")
+                      (begin
+                        (let ([f (make-file '(1 3 5 8 11 13))])
+                          (let ([found #f])
+                            (begin
+                              (letrec ([loop (lambda ()
+                                               (let ([env (list* env)])
+                                                 (let ([val (file-read f)])
+                                                   (when val
                                                      (let ([target env]
-                                                           [name 'n]
+                                                           [name 'x]
                                                            [v val])
                                                        (set-cdr!
                                                          target
@@ -183,86 +143,11 @@
                                                            (seed-eval
                                                              e
                                                              env)))
-                                                       '((set! total
-                                                           (+ total n))))
-                                                     (loop)))))))])
-                          (loop))
-                        (display total))))
-                  (begin
-                    (newline)
-                    (begin
-                      (display '"found: ")
-                      (begin
-                        (let ([f (make-file '(1 3 5 8 11 13))])
-                          (let ([found #f])
-                            (begin
-                              (letrec ([loop (lambda ()
-                                               (let ([env (list* env)])
-                                                 (let ([val (file-read f)])
-                                                   (let ([proc (env-ref
-                                                                 'when
-                                                                 env)])
-                                                     (if (and (pair? proc)
-                                                              (eq? (car proc)
-                                                                   'operative))
-                                                         (let ([env (list*
-                                                                      (cons
-                                                                        'val
-                                                                        val)
-                                                                      (cons
-                                                                        'env
-                                                                        env)
-                                                                      (cons
-                                                                        'loop
-                                                                        loop)
-                                                                      env)])
-                                                           ((cdr proc) env 'val
-                                                             '(define env
-                                                                'x
-                                                                val)
-                                                             '(for-each
-                                                                (lambda (e)
-                                                                  (eval
-                                                                    e
-                                                                    env))
-                                                                '((when (even?
-                                                                          x)
-                                                                    (unless found
-                                                                      (set! found
-                                                                        x)))))
-                                                             '(loop)))
-                                                         (proc
-                                                           val
-                                                           (let ([target env]
-                                                                 [name 'x]
-                                                                 [v val])
-                                                             (set-cdr!
-                                                               target
-                                                               (cons
-                                                                 (car target)
-                                                                 (cdr target)))
-                                                             (set-car!
-                                                               target
-                                                               (cons
-                                                                 name
-                                                                 v))
-                                                             v)
-                                                           (for-each
-                                                             (lambda (e)
-                                                               (let ([env (list*
-                                                                            (cons
-                                                                              'e
-                                                                              e)
-                                                                            env)])
-                                                                 (seed-eval
-                                                                   e
-                                                                   env)))
-                                                             '((when (even?
-                                                                       x)
-                                                                 (unless found
-                                                                   (set! found
-                                                                     x)))))
-                                                           (loop)))))))])
+                                                       '((when (even? x)
+                                                           (unless found
+                                                             (set! found
+                                                               x)))))
+                                                     (loop)))))])
                                 (loop))
                               (display found))))
                         (begin

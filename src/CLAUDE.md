@@ -17,7 +17,7 @@ The compiler is implemented in Chez Scheme and uses a **5-pass nanopass architec
 
 ### Building and Testing
 ```bash
-# Run all 192 tests (checks.scm loads and tests seed.scm)
+# Run all 195 tests (checks.scm loads and tests seed.scm)
 make check
 # or directly:
 scheme --script checks.scm
@@ -63,8 +63,8 @@ scheme --script seed.scm path/to/program.seed
 ## Architecture
 
 ### Core Files
-- **seed.scm** (1682 lines): Main compiler implementation with all 5 passes
-- **checks.scm** (973 lines): Comprehensive test suite with 192 tests
+- **seed.scm** (1765 lines): Main compiler implementation with all 5 passes
+- **checks.scm** (991 lines): Comprehensive test suite with 195 tests
 - **match.scm** (914 lines): SRFI-241 pattern matcher (local copy, used by seed.scm)
 
 ### Key Design Decisions
@@ -131,7 +131,7 @@ Default is `#f` (production). Override with `--dev` flag in benchmarks.
 ## Workflow Notes
 
 **Testing**
-- All tests are in `checks.scm`, which loads `seed.scm` and runs 192 tests
+- All tests are in `checks.scm`, which loads `seed.scm` and runs 195 tests
 - Tests cover parsing, annotation, classification, BTA, and roundtrips
 - `make check` is the standard way to verify correctness
 
