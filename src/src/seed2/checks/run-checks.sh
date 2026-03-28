@@ -9,9 +9,9 @@ pass=0
 fail=0
 errors=""
 
-for seed_file in "$SCRIPT_DIR"/*.seed; do
-  name="$(basename "$seed_file" .seed)"
-  expected="$SCRIPT_DIR/$name.expected"
+for seed_file in "$SCRIPT_DIR"/*.seed2.scm; do
+  name="$(basename "$seed_file" .seed2.scm)"
+  expected="$SCRIPT_DIR/$name.expected.txt"
 
   if [ ! -f "$expected" ]; then
     echo "  SKIP $name (no .expected file)"
