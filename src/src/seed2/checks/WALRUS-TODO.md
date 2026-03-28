@@ -1,9 +1,13 @@
 # Walrus: seed-eval / compiled Chez interop
 
-The walrus example (`walrus.seed2.scm`) compiles and produces correct
-compiled output but fails at runtime.  The root cause is a mismatch
-between the two environment representations used by compiled code and
-`seed-eval`.
+The walrus test passes using `if` in the `while:=` definition and
+examples that only reference operative-defined bindings.  Two
+limitations remain due to a mismatch between the environment
+representations used by compiled code and `seed-eval`:
+
+1. Using `when` (a runtime operative) instead of `if` in the vau body
+2. Body forms that reference caller-scope `let`-bound Chez locals
+   (e.g., `(set! total ...)` where `total` is a `let` binding)
 
 ## What works
 
@@ -22,7 +26,7 @@ The `if`-based version of `while:=` works:
 ```
 
 Here `if` is compiled directly.  The compiler handles `define env`,
-`for-each`, and `loop` as Chez code --no runtime dispatch needed.
+`for-each`, and `loop` as Chez code -- no runtime dispatch needed.
 
 ## What fails
 

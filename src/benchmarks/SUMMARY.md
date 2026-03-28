@@ -7,24 +7,24 @@ Machine: 121GB RAM, Linux 6.17.
 
 | Benchmark | Seedink2 (Seed2) | Chez Scheme | Ratio (Seed2 / Chez) |
 |-----------|---------------:|-----------:|:--------------------:|
-| N-Queens (N=14)             |  26.90s |  27.18s | ~tied              |
-| Collatz (limit=20M)         |  12.38s |  13.31s | 1.08x faster       |
-| Abacus (depth=27)           |  12.24s |  12.46s | ~tied              |
-| Abacus2 (depth=27)          |  16.09s |  22.68s | 1.41x faster       |
-| Gremlin-fold (N=20000)      |  24.09s |  23.88s | ~tied              |
-| Gremlin-pipeline (N=20000)  |  24.06s |  23.70s | ~tied              |
-| **TOTAL**               |**115.76s**|**123.20s**| **1.06x faster** |
+| N-Queens (N=14)             |  26.75s |  27.17s | ~tied              |
+| Collatz (limit=20M)         |  12.46s |  13.31s | 1.07x faster       |
+| Abacus (depth=27)           |  11.99s |  12.00s | ~tied              |
+| Abacus2 (depth=27)          |  16.16s |  22.58s | 1.40x faster       |
+| Gremlin-fold (N=20000)      |  23.99s |  23.86s | ~tied              |
+| Gremlin-pipeline (N=20000)  |  24.58s |  23.69s | 1.04x slower       |
+| **TOTAL**               |**115.94s**|**122.61s**| **1.06x faster** |
 
 ### Gremlin Pipeline (N=20000 vertices, E=20 edges/vertex)
 
 | Variant | DSL style | Mechanism | Time |
 |---|---|---|---:|
-| Chez pipeline   | flat `(traverse g (V) (as a) (out) ...)` | `syntax-case` macro | 23.70s |
-| Chez gremlin-fold | nested `(gremlin-fold a stream acc body)` | `syntax-rules` macro | 23.88s |
-| Seed2 pipeline | flat `(traverse g (V) (as a) (out) ...)` | recursive vau + specializer | 24.06s |
-| Seed2 gremlin-fold | nested `(gremlin-fold a stream acc body)` | vau + specializer | 24.09s |
+| Chez pipeline   | flat `(traverse g (V) (as a) (out) ...)` | `syntax-case` macro | 23.69s |
+| Chez gremlin-fold | nested `(gremlin-fold a stream acc body)` | `syntax-rules` macro | 23.86s |
+| Seed2 pipeline | flat `(traverse g (V) (as a) (out) ...)` | recursive vau + specializer | 24.58s |
+| Seed2 gremlin-fold | nested `(gremlin-fold a stream acc body)` | vau + specializer | 23.99s |
 
-All compile-time variants within ~2%.
+All compile-time variants within ~4%.
 
 ## Observations
 
@@ -84,7 +84,7 @@ accumulator explicitly.
 See [LIMITS.md](LIMITS.md) for details.  The Seed benchmarks carry a
 hand-optimized runtime pattern matcher (`pmatch`) with fast paths for
 single-variable catamorphism.  SRFI-241 `match` generates correct but
-generic code.  The speed advantage (~41%) comes from specialization, not
+generic code.  The speed advantage (~40%) comes from specialization, not
 from a fundamental compiler advantage.
 
 ### N-Queens: effectively tied
