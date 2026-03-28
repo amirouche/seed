@@ -1559,9 +1559,7 @@
     ;; Call to known vau -> SPECIALIZE at compile time
     [(call (var ,name local) ,arguments)
      (guard (let ([e (assq name context)])
-              (and e (vau-info? (cdr e))
-                   (not (ast-has-unknown-operative-calls?
-                          (cadddr (cdr e)) context)))))
+              (and e (vau-info? (cdr e)))))
      (let* ([info (cdr (assq name context))]
             [vau-parameters (cadr info)]
             [vau-ep (caddr info)]
