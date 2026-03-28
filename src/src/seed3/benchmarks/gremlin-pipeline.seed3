@@ -1,0 +1,176 @@
+;;; gremlin-pipeline.seed — TinkerPop-inspired Gremlin Traversal DSL (Seed1)
+;;;
+;;; Seed1 translation of the Seed2 pipeline benchmark.
+;;; Uses a compile-steps function to build nested loops as S-expressions,
+;;; then evals the result.  Same triangle-counting algorithm as the
+;;; Seed2 and Chez versions.
+;;;
+;;; Steps:
+;;;   (V)          — source: all vertices           [g.V()]
+;;;   (as name)    — label current traverser        [.as('name')]
+;;;   (out)        — flat-map outgoing edges        [.out()]
+;;;   (where pred) — filter by predicate            [.filter{pred}]
+;;;   (count)      — terminal: count traversers     [.count()]
+
+;; ============================================================
+;; Pipeline compiler: flat steps -> nested loops
+;; ============================================================
+
+(define loop-names '(loop0 loop1 loop2 loop3 loop4 loop5 loop6 loop7))
+
+(define compile-steps
+  (lambda (steps last-as stream depth)
+    (if (null? steps) '(+ acc 1)
+        (let ((step (car steps)) (rest (cdr steps)))
+          (let ((kw (car step)))
+
+            (if (eq? kw 'V)
+                (compile-steps rest last-as '(iota (length g)) depth)
+
+            (if (eq? kw 'as)
+                (let ((name (cadr step))
+                      (lsym (list-ref loop-names depth)))
+                  (let ((inner (compile-steps rest name #f (+ depth 1))))
+                    (list 'letrec
+                      (list (list lsym
+                        (list 'lambda '(items acc)
+                          (list 'if '(null? items) 'acc
+                            (list 'let (list (list name '(car items)))
+                              (list lsym '(cdr items) inner))))))
+                      (list lsym stream 'acc))))
+
+            (if (eq? kw 'out)
+                (compile-steps rest last-as (list 'out 'g last-as) depth)
+
+            (if (eq? kw 'where)
+                (let ((pred (cadr step)))
+                  (list 'if (list 'not pred) 'acc
+                    (compile-steps rest last-as stream depth)))
+
+            (if (eq? kw 'count)
+                '(+ acc 1)
+
+                (compile-steps rest last-as stream depth)))))))))))
+
+;; ============================================================
+;; traverse — the TinkerPop-inspired traversal vau
+;; ============================================================
+
+(define traverse
+  (vau (graph-expr . steps) env
+    (let ((g (eval graph-expr env)))
+      (let ((code (compile-steps steps #f #f 0)))
+        (let ((wrapped (list 'let '((acc 0)) code)))
+          (eval wrapped (cons (cons 'g g) env)))))))
+
+;; ============================================================
+;; Graph representation
+;; ============================================================
+
+(define rng-next
+  (lambda (s)
+    (let ((next (remainder (+ (* s 1103515245) 12345) 2147483648)))
+      (if (< next 0) (- 0 next) next))))
+
+(define make-graph
+  (lambda (n edges-per-vertex num-groups rng-seed)
+    (let build ((i 0) (s rng-seed) (acc '()))
+      (if (= i n)
+          (let ((entries (reverse acc)))
+            (let add-edges ((rest entries) (idx 0) (s2 s) (result '()))
+              (if (null? rest) (reverse result)
+                  (let ((entry (car rest)))
+                    (let add-e ((j 0) (s3 s2) (nbrs '()))
+                      (if (= j edges-per-vertex)
+                          (add-edges (cdr rest) (+ idx 1) s3
+                                     (cons (cons (car entry) nbrs) result))
+                          (let ((s4 (rng-next s3)))
+                            (let ((target (remainder s4 n)))
+                              (if (= target idx)
+                                  (add-e j s4 nbrs)
+                                  (add-e (+ j 1) s4 (cons target nbrs)))))))))))
+          (let ((s2 (rng-next s)))
+            (build (+ i 1) s2
+                   (cons (list (remainder s2 num-groups)) acc)))))))
+
+(define graph-ref
+  (lambda (g v) (list-ref g v)))
+
+(define graph-group
+  (lambda (entry) (car entry)))
+
+(define graph-neighbors
+  (lambda (entry) (cdr entry)))
+
+(define out
+  (lambda (g v) (graph-neighbors (graph-ref g v))))
+
+(define same-group?
+  (lambda (g a b)
+    (= (graph-group (graph-ref g a))
+       (graph-group (graph-ref g b)))))
+
+(define edge?
+  (lambda (g from to)
+    (if (memv to (graph-neighbors (graph-ref g from))) #t #f)))
+
+;; ============================================================
+;; Triangle counting — TinkerPop-style traversal
+;; ============================================================
+
+(display "Gremlin Pipeline Benchmark (TinkerPop-style traversal DSL)")
+(newline)
+(newline)
+
+(let ((g (make-graph 20 5 3 42)))
+  (let ((tri
+          (traverse g
+            (V)
+            (as a)
+            (out)
+            (as b)
+            (where (same-group? g a b))
+            (out)
+            (as c)
+            (where (same-group? g a c))
+            (where (edge? g c a))
+            (count))))
+    (display "Small graph (20 vertices, 5 edges/v, 3 groups): ")
+    (display tri)
+    (display " triangles")
+    (newline)))
+
+;; ============================================================
+;; Benchmark
+;; ============================================================
+
+(define gremlin-n
+  (let ((env-val (getenv "SEED_GREMLIN_N")))
+    (if env-val (string->number env-val) 20000)))
+
+(define gremlin-e
+  (let ((env-val (getenv "SEED_GREMLIN_E")))
+    (if env-val (string->number env-val) 20)))
+
+(let ((g (make-graph gremlin-n gremlin-e 10 12345)))
+  (display "Graph: ")
+  (display gremlin-n)
+  (display " vertices, ")
+  (display gremlin-e)
+  (display " edges/vertex, 10 groups")
+  (newline)
+  (let ((tri (time
+               (traverse g
+                 (V)
+                 (as a)
+                 (out)
+                 (as b)
+                 (where (same-group? g a b))
+                 (out)
+                 (as c)
+                 (where (same-group? g a c))
+                 (where (edge? g c a))
+                 (count)))))
+    (display tri)
+    (display " triangles")
+    (newline)))
