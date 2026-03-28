@@ -767,6 +767,70 @@
 
 ;; Build environment extension for operative dispatch: capture Chez locals
 ;; that appear free in syntax-arguments so seed-evaluate can resolve them.
+;; Is this AST node a compile-time-known value?
+(define (static-value? ast)
+  (match ast
+    [(const ,_) #t]
+    [(quot ,_) #t]
+    [,_ #f]))
+
+;; Extract the runtime value from a static AST node
+(define (static-value-extract ast)
+  (match ast
+    [(const ,value) value]
+    [(quot ,datum) datum]))
+
+;; Wrap a runtime value back into the appropriate AST node
+(define (value-to-ast value)
+  (if (or (number? value) (boolean? value) (string? value) (null? value))
+      `(const ,value)
+      `(quot ,value)))
+
+;; Primitives safe to fold at compile time
+(define *foldable-primitives*
+  '(car cdr caar cadr cdar cddr caaar caadr
+    cons list append reverse length
+    null? pair? number? symbol? boolean? string? eq? equal? not
+    + - * quotient remainder modulo abs
+    = < > <= >=))
+
+;; Try to fold (name arg1 arg2 ...) at compile time.
+;; Returns AST node or #f.
+(define (try-fold-call name arg-asts)
+  (and (memq name *foldable-primitives*)
+       (for-all static-value? arg-asts)
+       (let ([values (map static-value-extract arg-asts)])
+         (call/cc (lambda (escape)
+           (with-exception-handler
+             (lambda (condition) (escape #f))
+             (lambda ()
+               (value-to-ast (apply (eval name) values)))))))))
+
+;; Inline a known lambda at a call site when some arguments are static.
+;; Static arguments are folded into the substitution; dynamic arguments
+;; become let bindings. Returns the specialized body or #f on failure.
+(define (inline-lambda lam-ast arg-asts substitution environment-parameter
+                       context lambda-environment inline-fuel)
+  (match lam-ast
+    [(lam ,parameters ,body)
+     (guard (list? parameters) (= (length parameters) (length arg-asts)))
+     (let ([clean-substitution
+             (remp (lambda (s) (memq (car s) parameters)) substitution)])
+       (let loop ([ps parameters] [as arg-asts]
+                  [new-substitution clean-substitution] [kept '()])
+         (if (null? ps)
+             (let ([body-result
+                     (specialize-expression body new-substitution
+                       environment-parameter context lambda-environment
+                       inline-fuel)])
+               (if (null? kept) body-result `(let ,(reverse kept) ,body-result)))
+             (if (static-value? (car as))
+                 (loop (cdr ps) (cdr as)
+                       (cons (cons (car ps) (car as)) new-substitution) kept)
+                 (loop (cdr ps) (cdr as) new-substitution
+                       (cons (list (car ps) (car as)) kept))))))]
+    [,_ #f]))
+
 (define (build-operative-environment-extension syntax-arguments context)
   (let* ([source-forms (map (lambda (sa)
                               (if (and (pair? sa) (eq? (car sa) 'quote))
@@ -793,6 +857,32 @@
       `(let ([env (list* ,@(map (lambda (s) `(cons ',s ,s)) locals) env)])
          ,call-code)))
 
+;; Compile an eval'd body expression inline instead of falling back to
+;; seed-evaluate. Takes the body S-expression and a bindings AST (the alist
+;; of pattern bindings from pmatch). Generates code that looks up bindings
+;; via (cdr (assq 'sym binds)), which alist fusion then eliminates.
+(define (compile-eval-body body-sexp binds-ast env-ast context
+                           lambda-environment inline-fuel)
+  (let* ([all-vars (extract-free-symbols body-sexp)]
+         [scope (map (lambda (v) (cons v 'local)) all-vars)]
+         [parsed (parse body-sexp)]
+         [annotated ((annotate scope) parsed)]
+         [body-ast (specialize-expression annotated '() #f context
+                                          lambda-environment inline-fuel)]
+         ;; After specialization, only generate env-lookups for variables
+         ;; that are still referenced.
+         [body-free (ast-collect-free-variables body-ast)]
+         [live-vars (filter (lambda (v) (memq v body-free)) all-vars)]
+         ;; Variables already in context are Chez locals from the enclosing
+         ;; scope — reference them directly. Only generate assq lookups for rest.
+         [need-lookup (filter (lambda (v) (not (assq v context))) live-vars)]
+         [let-binds (map (lambda (v)
+                           (list v `(call (var cdr free)
+                                     ((call (var assq free)
+                                        ((quot ,v) ,binds-ast))))))
+                         need-lookup)])
+    (if (null? let-binds) body-ast `(let ,let-binds ,body-ast))))
+
 ;; Top-level specialization: bind parameters, run spec, iterate to fixpoint.
 (define (specialize body parameters arguments environment-parameter context)
   (let* ([substitution (bind-parameters-to-arguments parameters arguments)]
@@ -810,13 +900,14 @@
              context)]
          [ast (specialize-expression body substitution environment-parameter
                                      context lambda-environment 100)])
-    ;; Iterate with empty substitution until fixed point (or fuel exhausted)
+    ;; Iterate with empty substitution + alist fusion until fixed point
     (let loop ([ast ast] [fuel 10])
       (if (zero? fuel) ast
-          (let ([ast-prime (specialize-expression ast '() #f context
-                                                  lambda-environment 100)])
-            (if (equal? ast-prime ast) ast
-                (loop ast-prime (- fuel 1))))))))
+          (let* ([ast-prime (specialize-expression ast '() #f context
+                                                   lambda-environment 100)]
+                 [ast-fused (fuse-alist-lets ast-prime)])
+            (if (equal? ast-fused ast) ast
+                (loop ast-fused (- fuel 1))))))))
 
 ;; Core specialization: transform AST by applying substitutions.
 (define (specialize-expression ast substitution environment-parameter
@@ -886,6 +977,18 @@
                    (specialize vau-body vau-parameters argument-asts vau-ep context))
                  `(eval ,specialized (dyn-env))))
            `(eval ,specialized (dyn-env))))]
+
+    ;; Eval of make-let with static body -> compile directly
+    ;; Detects (eval (make-let binds (quot body)) env) and compiles the body
+    ;; inline with assq lookups for bindings, which alist fusion then eliminates.
+    ;; make-let may be local or free depending on scope.
+    [(eval (call (var ,ml ,_) (,binds-ast (quot ,body-sexp))) (dyn-env))
+     (guard (eq? ml 'make-let))
+     (let ([binds-specialized (specialize-expression binds-ast substitution
+                                environment-parameter context
+                                lambda-environment inline-fuel)])
+       (compile-eval-body body-sexp binds-specialized '(dyn-env) context
+                          lambda-environment inline-fuel))]
 
     ;; Eval of static quoted vau call -> specialize directly
     [(eval (quot ,form) (dyn-env))
@@ -983,13 +1086,34 @@
                      (loop (cdr ns) (cdr vs) sub
                            (cons (list (car ns) specialized-value) kept)))))))]
 
-    ;; Call to free — specialize arguments
+    ;; Call to free — specialize arguments + constant fold + inline from lenv
     [(call (var ,name free) ,arguments)
-     `(call (var ,name free)
-            ,(map (lambda (a)
-                    (specialize-expression a substitution environment-parameter
-                                           context lambda-environment inline-fuel))
-                  arguments))]
+     (let ([arg-asts (map (lambda (a)
+                            (specialize-expression a substitution environment-parameter
+                                                   context lambda-environment inline-fuel))
+                          arguments)])
+       (or (try-fold-call name arg-asts)
+           ;; Inline known lambda from lambda-environment (same as local calls)
+           (and (> inline-fuel 0)
+                (assq name lambda-environment)
+                (exists (lambda (a)
+                          (and (static-value? a)
+                               (not (equal? a '(quot ())))))
+                        arg-asts)
+                (let* ([lam-ast (cdr (assq name lambda-environment))]
+                       [result (inline-lambda lam-ast arg-asts
+                                 substitution environment-parameter context
+                                 lambda-environment (- inline-fuel 1))])
+                  (and result
+                       (not (match lam-ast
+                              [(lam ,parameters ,_)
+                               (let ([free-in-result
+                                       (ast-collect-free-variables result)])
+                                 (exists (lambda (p) (memq p free-in-result))
+                                         parameters))]
+                              [,_ #f]))
+                       result)))
+           `(call (var ,name free) ,arg-asts)))]
 
     ;; Call to known vau in context -> specialize at specialization time
     [(call (var ,name local) ,arguments)
@@ -1007,7 +1131,7 @@
             [vau-body (cadddr info)])
        (specialize vau-body vau-parameters specialized-arguments vau-ep context))]
 
-    ;; Call to local — specialize arguments
+    ;; Call to local — specialize arguments + inline from lambda-environment
     [(call (var ,name local) ,arguments)
      (let ([specialized-arguments
              (map (lambda (a)
@@ -1021,6 +1145,29 @@
                  `(call ,(if (and (pair? value) (eq? (car value) 'alias))
                              (cadr value) value)
                          ,specialized-arguments)))]
+         ;; Inline known lambda when some args are static (enables make-let fusion)
+         [(and (> inline-fuel 0)
+               (assq name lambda-environment)
+               (exists (lambda (a)
+                         (and (static-value? a)
+                              ;; Exclude (quot ()) to prevent inlining explosion
+                              ;; with accumulator patterns (pmatch/pmatch-elts)
+                              (not (equal? a '(quot ())))))
+                       specialized-arguments))
+          (let* ([lam-ast (cdr (assq name lambda-environment))]
+                 [result (inline-lambda lam-ast specialized-arguments
+                           substitution environment-parameter context
+                           lambda-environment (- inline-fuel 1))])
+            (if (and result
+                     (not (match lam-ast
+                            [(lam ,parameters ,_)
+                             (let ([free-in-result
+                                     (ast-collect-free-variables result)])
+                               (exists (lambda (p) (memq p free-in-result))
+                                       parameters))]
+                            [,_ #f])))
+                result
+                `(call (var ,name local) ,specialized-arguments)))]
          [else `(call (var ,name local) ,specialized-arguments)]))]
 
     ;; General call fallback
@@ -1032,9 +1179,9 @@
                                            context lambda-environment inline-fuel))
                   arguments))]
 
-    ;; Letrec — specialize bindings and body
+    ;; Letrec — specialize bindings and body (two-pass for cross-inlining)
     [(letrec ((,names ,values) ...) ,body)
-     (let* ([specialized-values
+     (let* ([first-pass-values
               (map (lambda (v)
                      (specialize-expression v substitution environment-parameter
                                             context lambda-environment inline-fuel))
@@ -1048,11 +1195,34 @@
                         [(lam ,p ,b) (cons n v)]
                         [(wrap (vau ,p #f ,b)) (cons n `(lam ,p ,b))]
                         [,_ #f])))
-                  (map cons names specialized-values))
-                lambda-environment)])
-       `(letrec ,(map list names specialized-values)
+                  (map cons names first-pass-values))
+                lambda-environment)]
+            ;; Second pass: re-specialize values with inner-lambda-environment
+            ;; so letrec bindings can inline calls to each other
+            [final-values
+              (if (null? inner-lambda-environment)
+                  first-pass-values
+                  (map (lambda (v)
+                         (specialize-expression v '() #f context
+                                                inner-lambda-environment inline-fuel))
+                       first-pass-values))]
+            ;; Rebuild lambda-environment from final values
+            [final-lambda-environment
+              (if (equal? final-values first-pass-values)
+                  inner-lambda-environment
+                  (append
+                    (filter-map
+                      (lambda (name-value)
+                        (let ([n (car name-value)] [v (cdr name-value)])
+                          (match v
+                            [(lam ,p ,b) (cons n v)]
+                            [(wrap (vau ,p #f ,b)) (cons n `(lam ,p ,b))]
+                            [,_ #f])))
+                      (map cons names final-values))
+                    lambda-environment))])
+       `(letrec ,(map list names final-values)
           ,(specialize-expression body substitution environment-parameter
-                                  context inner-lambda-environment inline-fuel)))]
+                                  context final-lambda-environment inline-fuel)))]
 
     ;; Pure lambda (lam)
     [(lam ,parameters ,body)
@@ -1121,6 +1291,277 @@
                environment-parameter context lambda-environment inline-fuel))]
 
     ;; Anything else — pass through
+    [,_ ast]))
+
+;; =========================================================================
+;; Alist Fusion: eliminate build+destructure in compiled match
+;; =========================================================================
+;;
+;; After specialization, match vau bodies produce code that builds alists
+;; via (cons (cons 'sym val) prev) then tests with (if binds ...) and
+;; accesses with (cdr (assq 'sym binds)). Alist fusion rewrites these
+;; patterns into direct variable bindings, eliminating the alist overhead.
+
+;; Check if a match expression can be fully handled by thread-body.
+;; Returns #t only if all leaf positions are (var _ local), (quot _), or (const #f).
+(define (fusible-match? expression)
+  (match expression
+    ;; Rule 1: cons-bind + truthy-test
+    [(let ((,x (call (var cons free)
+                 ((call (var cons free) ((quot ,_) ,_val)) ,_prev))))
+       (if (var ,x2 local) ,continuation (const #f)))
+     (guard (eq? x x2))
+     (fusible-match? continuation)]
+    ;; Rule 1b: let-wrapped cons-bind + truthy-test
+    [(let ((,x (let ((,_v ,_e))
+                 (call (var cons free)
+                   ((call (var cons free) ((quot ,_) ,_body)) ,_prev)))))
+       (if (var ,x2 local) ,continuation (const #f)))
+     (guard (eq? x x2))
+     (fusible-match? continuation)]
+    ;; Rule 2: non-cons bind + truthy-test
+    [(let ((,x ,_expr)) (if (var ,x2 local) ,continuation (const #f)))
+     (guard (eq? x x2))
+     (fusible-match? continuation)]
+    ;; Rule 3: bare cons pair
+    [(call (var cons free)
+       ((call (var cons free) ((quot ,_) ,_val)) ,prev))
+     (fusible-match? prev)]
+    ;; Rule 4: structural if
+    [(if ,_test ,consequent ,alternative)
+     (and (fusible-match? consequent) (fusible-match? alternative))]
+    ;; Rule 5: structural let
+    [(let ((,_v ,_e)) ,rest)
+     (fusible-match? rest)]
+    ;; Rule 6: success leaf — variable
+    [(var ,_ local) #t]
+    ;; Rule 7: success leaf — quoted value
+    [(quot ,_) #t]
+    ;; Rule 8: failure leaf
+    [(const #f) #t]
+    ;; Anything else: not fusible
+    [,_ #f]))
+
+;; Check if AST contains (call (var assq free) ((quot _) (var BINDS-NAME local)))
+(define (ast-has-assq-references? ast binds-name)
+  (match ast
+    [(call (var assq free) ((quot ,_) (var ,name local)))
+     (eq? name binds-name)]
+    [(let ((,_ ,values) ...) ,body)
+     (or (exists (lambda (v) (ast-has-assq-references? v binds-name)) values)
+         (ast-has-assq-references? body binds-name))]
+    [(if ,test ,consequent ,alternative)
+     (or (ast-has-assq-references? test binds-name)
+         (ast-has-assq-references? consequent binds-name)
+         (ast-has-assq-references? alternative binds-name))]
+    [(call ,function ,arguments)
+     (or (ast-has-assq-references? function binds-name)
+         (exists (lambda (a) (ast-has-assq-references? a binds-name)) arguments))]
+    [(letrec ((,_ ,values) ...) ,body)
+     (or (exists (lambda (v) (ast-has-assq-references? v binds-name)) values)
+         (ast-has-assq-references? body binds-name))]
+    [,_ #f]))
+
+;; Collect all symbol names referenced via (cdr (assq 'SYM binds))
+(define (collect-assq-symbols ast binds-name)
+  (match ast
+    [(call (var cdr free) ((call (var assq free) ((quot ,symbol) (var ,bound-name local)))))
+     (guard (eq? bound-name binds-name))
+     (list symbol)]
+    [(let ((,_ ,values) ...) ,body)
+     (append (apply append (map (lambda (v) (collect-assq-symbols v binds-name)) values))
+             (collect-assq-symbols body binds-name))]
+    [(if ,test ,consequent ,alternative)
+     (append (collect-assq-symbols test binds-name)
+             (collect-assq-symbols consequent binds-name)
+             (collect-assq-symbols alternative binds-name))]
+    [(call ,function ,arguments)
+     (append (collect-assq-symbols function binds-name)
+             (apply append (map (lambda (a) (collect-assq-symbols a binds-name)) arguments)))]
+    [(letrec ((,_ ,values) ...) ,body)
+     (append (apply append (map (lambda (v) (collect-assq-symbols v binds-name)) values))
+             (collect-assq-symbols body binds-name))]
+    [,_ '()]))
+
+;; Replace (cdr (assq 'SYM binds)) with (var SYM local) throughout AST
+(define (replace-assq-references ast binds-name)
+  (match ast
+    [(call (var cdr free) ((call (var assq free) ((quot ,symbol) (var ,bound-name local)))))
+     (guard (eq? bound-name binds-name))
+     `(var ,symbol local)]
+    [(let ((,names ,values) ...) ,body)
+     `(let ,(map list names (map (lambda (v) (replace-assq-references v binds-name)) values))
+        ,(replace-assq-references body binds-name))]
+    [(if ,test ,consequent ,alternative)
+     `(if ,(replace-assq-references test binds-name)
+          ,(replace-assq-references consequent binds-name)
+          ,(replace-assq-references alternative binds-name))]
+    [(call ,function ,arguments)
+     `(call ,(replace-assq-references function binds-name)
+            ,(map (lambda (a) (replace-assq-references a binds-name)) arguments))]
+    [(letrec ((,names ,values) ...) ,body)
+     `(letrec ,(map list names (map (lambda (v) (replace-assq-references v binds-name)) values))
+        ,(replace-assq-references body binds-name))]
+    [,_ ast]))
+
+;; Convert (var SYM free) to (var SYM local) for symbols in the given set.
+;; After fusion, variables that were free (from compile-eval-body let) become
+;; local once thread-body binds them directly.
+(define (fix-free-to-local ast symbols)
+  (match ast
+    [(var ,name free) (if (memq name symbols) `(var ,name local) ast)]
+    [(var ,_ ,_) ast]
+    [(const ,_) ast]
+    [(quot ,_) ast]
+    [(dyn-env) ast]
+    [(if ,test ,consequent ,alternative)
+     `(if ,(fix-free-to-local test symbols)
+          ,(fix-free-to-local consequent symbols)
+          ,(fix-free-to-local alternative symbols))]
+    [(let ((,names ,values) ...) ,body)
+     `(let ,(map list names (map (lambda (v) (fix-free-to-local v symbols)) values))
+        ,(fix-free-to-local body symbols))]
+    [(call ,function ,arguments)
+     `(call ,(fix-free-to-local function symbols)
+            ,(map (lambda (a) (fix-free-to-local a symbols)) arguments))]
+    [(letrec ((,names ,values) ...) ,body)
+     `(letrec ,(map list names (map (lambda (v) (fix-free-to-local v symbols)) values))
+        ,(fix-free-to-local body symbols))]
+    [(lam ,parameters ,body)
+     `(lam ,parameters ,(fix-free-to-local body symbols))]
+    [(wrap (vau ,p ,e ,b))
+     `(wrap (vau ,p ,e ,(fix-free-to-local b symbols)))]
+    [(wrap (vau ,p ,e ,b ,bta))
+     `(wrap (vau ,p ,e ,(fix-free-to-local b symbols) ,bta))]
+    [,_ ast]))
+
+;; Substitute all occurrences of (var NAME local) with REPLACEMENT in AST.
+;; Stops at binding forms that shadow NAME.
+(define (substitute-variable-in-ast ast name replacement)
+  (match ast
+    [(var ,n local) (if (eq? n name) replacement ast)]
+    [(var ,_ free) ast]
+    [(const ,_) ast]
+    [(quot ,_) ast]
+    [(dyn-env) ast]
+    [(if ,test ,consequent ,alternative)
+     `(if ,(substitute-variable-in-ast test name replacement)
+          ,(substitute-variable-in-ast consequent name replacement)
+          ,(substitute-variable-in-ast alternative name replacement))]
+    [(let ((,names ,values) ...) ,body)
+     (let ([new-values (map (lambda (v) (substitute-variable-in-ast v name replacement)) values)])
+       (if (memq name names)
+           `(let ,(map list names new-values) ,body)
+           `(let ,(map list names new-values)
+              ,(substitute-variable-in-ast body name replacement))))]
+    [(call ,function ,arguments)
+     `(call ,(substitute-variable-in-ast function name replacement)
+            ,(map (lambda (a) (substitute-variable-in-ast a name replacement)) arguments))]
+    [(letrec ((,names ,values) ...) ,body)
+     (if (memq name names)
+         ast
+         `(letrec ,(map list names
+                     (map (lambda (v) (substitute-variable-in-ast v name replacement)) values))
+            ,(substitute-variable-in-ast body name replacement)))]
+    [(lam ,parameters ,body)
+     (if (memq name parameters)
+         ast
+         `(lam ,parameters ,(substitute-variable-in-ast body name replacement)))]
+    [(define ,environment-expression ,name-expression ,value-expression)
+     `(define ,(substitute-variable-in-ast environment-expression name replacement)
+              ,(substitute-variable-in-ast name-expression name replacement)
+              ,(substitute-variable-in-ast value-expression name replacement))]
+    [,_ ast]))
+
+;; Thread success body into match success leaves, fail into failure leaves.
+;; Eliminates cons pair construction and cons-truthy tests.
+(define (thread-body expression success fail)
+  (match expression
+    ;; Rule 1: cons-bind + truthy-test -> direct variable binding
+    [(let ((,x (call (var cons free)
+                 ((call (var cons free) ((quot ,symbol) ,value)) ,_prev))))
+       (if (var ,x2 local) ,continuation (const #f)))
+     (guard (eq? x x2))
+     `(let ((,symbol ,value)) ,(thread-body continuation success fail))]
+
+    ;; Rule 1b: let-wrapped cons-bind + truthy-test
+    [(let ((,x (let ((,v ,e))
+                 (call (var cons free)
+                   ((call (var cons free) ((quot ,symbol) ,body)) ,_prev)))))
+       (if (var ,x2 local) ,continuation (const #f)))
+     (guard (eq? x x2))
+     (let ([inlined-body (substitute-variable-in-ast body v e)])
+       `(let ((,symbol ,inlined-body)) ,(thread-body continuation success fail)))]
+
+    ;; Rule 2: non-cons bind + truthy-test -> convert to if
+    [(let ((,x ,test-expression)) (if (var ,x2 local) ,continuation (const #f)))
+     (guard (eq? x x2))
+     `(if ,test-expression ,(thread-body continuation success fail) ,fail)]
+
+    ;; Rule 3: bare cons pair
+    [(call (var cons free)
+       ((call (var cons free) ((quot ,symbol) ,value)) ,prev))
+     `(let ((,symbol ,value)) ,(thread-body prev success fail))]
+
+    ;; Rule 4: structural if
+    [(if ,test ,consequent ,alternative)
+     `(if ,test ,(thread-body consequent success fail)
+                ,(thread-body alternative success fail))]
+
+    ;; Rule 5: structural let
+    [(let ((,v ,e)) ,rest)
+     `(let ((,v ,e)) ,(thread-body rest success fail))]
+
+    ;; Rule 6: success leaf — variable (accumulated alist)
+    [(var ,_ local) success]
+
+    ;; Rule 7: success leaf — quoted value (empty alist '())
+    [(quot ,_) success]
+
+    ;; Rule 8: failure leaf
+    [(const #f) fail]
+
+    ;; Fallthrough: leave unchanged
+    [,_ expression]))
+
+;; Walk full AST. When we find (let ([binds MATCH]) (if binds SUCCESS FAIL))
+;; where SUCCESS contains assq refs to binds, fuse them.
+(define (fuse-alist-lets ast)
+  (match ast
+    ;; Detect: (let ([binds MATCH]) (if binds SUCCESS FAIL))
+    [(let ((,binds ,match-expression))
+       (if (var ,binds2 local) ,success ,fail-expression))
+     (guard (eq? binds binds2)
+            (ast-has-assq-references? success binds)
+            (fusible-match? match-expression))
+     (let* ([bound-symbols (collect-assq-symbols success binds)]
+            [success-clean (fix-free-to-local
+                             (replace-assq-references success binds)
+                             bound-symbols)]
+            [match-fused (fuse-alist-lets match-expression)]
+            [fail-fused (fuse-alist-lets fail-expression)])
+       (thread-body match-fused success-clean fail-fused))]
+
+    ;; Recurse into compound forms
+    [(let ((,names ,values) ...) ,body)
+     `(let ,(map list names (map fuse-alist-lets values))
+        ,(fuse-alist-lets body))]
+    [(if ,test ,consequent ,alternative)
+     `(if ,(fuse-alist-lets test)
+          ,(fuse-alist-lets consequent)
+          ,(fuse-alist-lets alternative))]
+    [(letrec ((,names ,values) ...) ,body)
+     `(letrec ,(map list names (map fuse-alist-lets values))
+        ,(fuse-alist-lets body))]
+    [(call ,function ,arguments)
+     `(call ,(fuse-alist-lets function) ,(map fuse-alist-lets arguments))]
+    [(lam ,parameters ,body) `(lam ,parameters ,(fuse-alist-lets body))]
+    [(wrap (vau ,p ,e ,b)) `(wrap (vau ,p ,e ,(fuse-alist-lets b)))]
+    [(wrap (vau ,p ,e ,b ,bta)) `(wrap (vau ,p ,e ,(fuse-alist-lets b) ,bta))]
+    [(define ,environment-expression ,name-expression ,value-expression)
+     `(define ,(fuse-alist-lets environment-expression)
+              ,(fuse-alist-lets name-expression)
+              ,(fuse-alist-lets value-expression))]
     [,_ ast]))
 
 ;; -------------------------------------------------------------------------
