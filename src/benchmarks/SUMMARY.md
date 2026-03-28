@@ -1,6 +1,6 @@
 # Benchmark Summary
 
-Chez Scheme optimize-level 2, GC disabled (production mode).
+Chez Scheme optimize-level 2, GC disabled.
 Machine: 121GB RAM, Linux 6.17.
 
 ## Results
