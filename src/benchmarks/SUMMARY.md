@@ -1,32 +1,30 @@
 # Benchmark Summary
 
-Chez Scheme optimize-level 2, GC disabled (production mode).
+Chez Scheme optimize-level 3, GC enabled.
 Machine: 121GB RAM, Linux 6.17.
 
 ## Results
 
 | Benchmark | Seedink2 (Seed2) | Chez Scheme | Ratio (Seed2 / Chez) |
 |-----------|---------------:|-----------:|:--------------------:|
-| N-Queens (N=14)             |  27.35s |  27.23s | ~tied              |
-| Collatz (limit=20M)         |  12.74s |  13.27s | 1.04x faster       |
-| Abacus (depth=29)           |  12.21s |  11.76s | 1.04x slower       |
-| Abacus2 (depth=18)          |  15.90s |  22.77s | 1.43x faster       |
-| Gremlin-fold (N=20000)      |  23.91s |  23.86s | ~tied              |
-| Gremlin-pipeline (N=20000)  |  23.89s |  23.85s | ~tied              |
-| **TOTAL**               |**115.99s**|**122.74s**| **1.06x faster** |
+| N-Queens (N=14)             |  26.95s |  27.18s | ~tied              |
+| Collatz (limit=20M)         |  12.75s |  13.33s | 1.05x faster       |
+| Abacus (depth=27)           |  12.25s |  11.98s | 1.02x slower       |
+| Abacus2 (depth=27)          |  15.68s |  22.64s | 1.44x faster       |
+| Gremlin-fold (N=20000)      |  24.39s |  23.86s | 1.02x slower       |
+| Gremlin-pipeline (N=20000)  |  23.91s |  23.68s | ~tied              |
+| **TOTAL**               |**115.92s**|**122.67s**| **1.06x faster** |
 
 ### Gremlin Pipeline (N=20000 vertices, E=20 edges/vertex)
 
 | Variant | DSL style | Mechanism | Time |
 |---|---|---|---:|
-| Chez pipeline   | flat `(traverse g (V) (as a) (out) ...)` | `syntax-case` macro | 23.85s |
+| Chez pipeline   | flat `(traverse g (V) (as a) (out) ...)` | `syntax-case` macro | 23.68s |
 | Chez gremlin-fold | nested `(gremlin-fold a stream acc body)` | `syntax-rules` macro | 23.86s |
-| Seed2 pipeline | flat `(traverse g (V) (as a) (out) ...)` | recursive vau + specializer | 23.89s |
-| Seed2 gremlin-fold | nested `(gremlin-fold a stream acc body)` | vau + specializer | 23.91s |
-| Seed .seed pipeline | flat `(traverse g (V) (as a) (out) ...)` | compile-steps + runtime eval | 25.63s |
+| Seed2 pipeline | flat `(traverse g (V) (as a) (out) ...)` | recursive vau + specializer | 23.91s |
+| Seed2 gremlin-fold | nested `(gremlin-fold a stream acc body)` | vau + specializer | 24.39s |
 
-All compile-time variants within ~0.3%.  The runtime-codegen `.seed` version
-pays a 7% penalty from the extra seed-eval pass.
+All compile-time variants within ~3%.
 
 ## Observations
 
@@ -86,13 +84,13 @@ accumulator explicitly.
 See [LIMITS.md](LIMITS.md) for details. In short: the Seed benchmarks
 carry a hand-optimized runtime pattern matcher (`pmatch`) with fast paths
 for single-variable catamorphism. SRFI-241 `match` generates correct but
-generic code. The speed advantage (~43%) comes from specialization, not
+generic code. The speed advantage (~44%) comes from specialization, not
 from a fundamental compiler advantage.
 
 ### Why Chez wins on Abacus
 
 Abacus uses a simpler pattern structure where SRFI-241's generic code
-doesn't have the same overhead as in Abacus2. The ~4% Chez advantage
+doesn't have the same overhead as in Abacus2. The ~2% Chez advantage
 is from its mature optimizer handling the simpler patterns more efficiently.
 
 ### N-Queens: effectively tied
