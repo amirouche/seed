@@ -976,6 +976,12 @@
      (foo (vau (x) #f x)))
   '(+ 2 2))
 
+(test-run-env "ho-applicative/mixed"
+  '(letrec ((a (lambda (b) (b (+ 2 2)))))
+     (list (a (lambda (x) x))
+           (a (vau (x) #f x))))
+  '(4 (+ 2 2)))
+
 ;; --- Step 6 Summary ---
 (printf "~n── Step 6 Summary ──~n")
 (printf "  ~a/~a passed" test-pass test-count)
