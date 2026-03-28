@@ -3,7 +3,7 @@
 ## Abacus/Abacus2: Seed pmatch vs SRFI-241 match
 
 The abacus benchmarks compare Seed's runtime `pmatch` against Chez's
-SRFI-241 `match` macro.  Seed is faster (~41% on abacus2), but the two
+SRFI-241 `match` macro.  Seed is faster (~40% on abacus2), but the two
 implementations are not equivalent.  The Seed pmatch is a minimal runtime
 matcher; SRFI-241 is a full compile-time macro system.
 
@@ -52,7 +52,7 @@ Seed version is specialized while the Chez version is general-purpose.
 
 The pipeline benchmark compiles a flat TinkerPop-style step list into nested
 loops.  Both Seed2 and Chez produce structurally identical code and run within
-~2% of each other (24.06s vs 23.70s at N=20000).  The comparison is fair --
+~4% of each other (24.58s vs 23.69s at N=20000).  The comparison is fair --
 same algorithm, same loop structure, same graph.
 
 ### Where predicate evaluation
