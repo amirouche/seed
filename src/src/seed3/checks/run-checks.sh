@@ -3,7 +3,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SEED3="$SCRIPT_DIR/../seed3.scm"
+ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+SEED3="$ROOT/seedink3.scm"
 
 pass=0
 fail=0
@@ -19,7 +20,8 @@ for seed_file in "$SCRIPT_DIR"/*.seed3.scm; do
   fi
 
   # Capture stdout, strip (time ...) output that run-file emits
-  actual=$(scheme --script "$SEED3" "$seed_file" 2>/dev/null | sed '/^(time /,$d') || {
+  # Must run from repo root so Chez finds the seed3 R6RS library
+  actual=$(cd "$ROOT" && scheme --script "$SEED3" "$seed_file" 2>/dev/null | sed '/^(time /,$d') || {
     echo "  FAIL $name (runtime error)"
     fail=$((fail + 1))
     errors="$errors\n  $name: runtime error"
