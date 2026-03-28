@@ -345,7 +345,8 @@
     printf string? string-append string->number number->string
     iota for-each list*
     current-nanoseconds
-    exists for-all))
+    exists for-all
+    set-car! set-cdr!))
 
 ;; Does the AST contain any (var name free) where name is NOT a primitive?
 (define (has-free-vars? ast)
@@ -365,29 +366,43 @@
     [(vau ,_ ,_ ,[body]) body]
     [,_ #f]))
 
-;; Does the AST contain a call to a free non-primitive variable?
-;; Such calls may target runtime operatives, making compile-time
-;; specialization unsafe (syntax args get mangled by substitution).
-(define (has-unknown-operative-calls? ast)
+;; Does the AST contain a call to a free variable that is not a primitive
+;; and not known in ctx?  Such calls resolve via env-ref at runtime and
+;; may target operatives, making compile-time specialization unsafe
+;; (syntax args get mangled by substitution).
+(define (has-unknown-operative-calls? ast ctx)
   (match ast
     [(call (var ,n free) ,args)
-     (or (not (memq n *primitives*))
-         (ormap has-unknown-operative-calls? args))]
-    [(call ,[op] (,[a] ...)) (or op (ormap values a))]
+     (or (and (not (memq n *primitives*))
+              (not (assq n ctx)))
+         (ormap (lambda (a) (has-unknown-operative-calls? a ctx)) args))]
+    [(call ,op ,args)
+     (or (has-unknown-operative-calls? op ctx)
+         (ormap (lambda (a) (has-unknown-operative-calls? a ctx)) args))]
     [(var ,_ ,_) #f]
     [(const ,_) #f]
     [(quot ,_) #f]
     [(dyn-env) #f]
-    [(if ,[t] ,[c] ,[a]) (or t c a)]
-    [(begin ,[e] ...) (ormap values e)]
-    [(define ,[env-e] ,[name-e] ,[val-e]) (or env-e name-e val-e)]
-    [(eval ,[e] ,[ev]) (or e ev)]
-    [(time ,[e]) e]
-    [(let ((,_ ,[v]) ...) ,[body]) (or (ormap values v) body)]
-    [(letrec ((,_ ,[v]) ...) ,[body]) (or (ormap values v) body)]
-    [(lam ,_ ,[body]) body]
-    [(wrap ,[inner]) inner]
-    [(vau ,_ ,_ ,[body]) body]
+    [(if ,t ,c ,a) (or (has-unknown-operative-calls? t ctx)
+                       (has-unknown-operative-calls? c ctx)
+                       (has-unknown-operative-calls? a ctx))]
+    [(begin ,es ...) (ormap (lambda (e) (has-unknown-operative-calls? e ctx)) es)]
+    [(define ,env-e ,name-e ,val-e)
+     (or (has-unknown-operative-calls? env-e ctx)
+         (has-unknown-operative-calls? name-e ctx)
+         (has-unknown-operative-calls? val-e ctx))]
+    [(eval ,e ,ev) (or (has-unknown-operative-calls? e ctx)
+                       (has-unknown-operative-calls? ev ctx))]
+    [(time ,e) (has-unknown-operative-calls? e ctx)]
+    [(let ((,_ ,vals) ...) ,body)
+     (or (ormap (lambda (v) (has-unknown-operative-calls? v ctx)) vals)
+         (has-unknown-operative-calls? body ctx))]
+    [(letrec ((,_ ,vals) ...) ,body)
+     (or (ormap (lambda (v) (has-unknown-operative-calls? v ctx)) vals)
+         (has-unknown-operative-calls? body ctx))]
+    [(lam ,_ ,body) (has-unknown-operative-calls? body ctx)]
+    [(wrap ,inner) (has-unknown-operative-calls? inner ctx)]
+    [(vau ,_ ,_ ,body) (has-unknown-operative-calls? body ctx)]
     [,_ #f]))
 
 ;; Collect all free variable names referenced in the AST.
@@ -1919,7 +1934,7 @@
     [(call (var ,name local) ,args)
      (guard (let ([e (assq name ctx)])
               (and e (vau-info? (cdr e))
-                   (not (has-unknown-operative-calls? (cadddr (cdr e)))))))
+                   (not (has-unknown-operative-calls? (cadddr (cdr e)) ctx)))))
      (let* ([info (cdr (assq name ctx))]
             [vau-params (cadr info)]
             [vau-ep (caddr info)]
@@ -1940,6 +1955,11 @@
           (if (and (pair? proc) (eq? (car proc) 'operative))
               ,(wrap-operative-call locals `((cdr proc) env ,@syntax-args))
               (proc ,@arg-codes))))]
+
+    ;; Call to free Chez syntax keyword → direct call (cannot be bound to a variable)
+    [(call (var ,name free) ,args)
+     (guard (memq name '(and or when unless cond case do)))
+     `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
 
     ;; Call to other free — may be operative or applicative
     [(call (var ,name free) ,args)

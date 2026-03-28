@@ -302,9 +302,10 @@
     memq memv member
     list-ref list-tail
     printf string? string-append string->number number->string
-    iota
+    iota for-each list*
     current-nanoseconds
-    exists for-all))
+    exists for-all
+    set-car! set-cdr!))
 
 ;; Does the AST contain any (var name free) where name is NOT a primitive?
 (define (has-free-vars? ast)
@@ -1409,6 +1410,11 @@
           (if (and (pair? proc) (eq? (car proc) 'operative))
               ((cdr proc) env ,@syntax-args)
               (proc ,@arg-codes))))]
+
+    ;; Call to free Chez syntax keyword → direct call
+    [(call (var ,name free) ,args)
+     (guard (memq name '(and or when unless cond case do)))
+     `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
 
     ;; Call to other free — may be operative or applicative
     [(call (var ,name free) ,args)
