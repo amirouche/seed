@@ -143,6 +143,23 @@ TOTAL                 seedink               40.510s       42.554s
 TOTAL                 scheme                42.381s       43.727s
 ```
 
+## Feedback & Further Reading
+
+This project was discussed on [r/scheme](https://old.reddit.com/r/scheme/comments/1r2v4ax/kernels_vau_can_be_faster_than_syntaxcase/) and the following points were raised:
+
+**On `define-record-type` and environment mutation** — WittyStick pointed out that `$provide!` is the canonical Kernel solution, and that compiling operatives with environment mutation is possible via row-polymorphic environment types. Seed2 now supports caller environment extension via `call-with-values` — the exported names land as lambda parameters, immutably. The old downside ("you can't write `define-class`") no longer holds when the export list is statically known.
+
+[**On first-class operatives as function parameters** — datarama
+identified a genuine
+bug](https://lobste.rs/s/2debab/seed_adding_vau_with_immutable_dynamic#c_u7wldl):
+call sites for lambda-bound parameters do not currently emit
+operative/applicative dispatch. This is a known issue.
+
+**References from the thread:**
+
+- Mitchell Wand, [Type Inference for Record Concatenation and Multiple Inheritance](https://www.cs.tufts.edu/~nr/cs257/archive/mitch-wand/types-simple-objects.pdf) — the theoretical basis for row-polymorphic environments
+- Alan Bawden, [First-class Macros Have Types](https://people.csail.mit.edu/alan/mtt/) — static typing for first-class macros, directly relevant to compile-time environment shape inference
+
 ## Conclusion
 
 Here is the Chez Scheme code. Benchmark! Enjoy! And let there be… evaluation.
