@@ -2,7 +2,15 @@ ROOT := $(shell cd ../.. && pwd)
 SEEDINK := $(ROOT)/seedink3.scm
 HERE := $(shell pwd)
 
-.PHONY: check check-unit benchmark
+.PHONY: help check check-unit benchmark
+
+help:
+	@echo "Seed3 Makefile targets:"
+	@echo ""
+	@echo "  check       Run 152 unit tests then 7 end-to-end tests"
+	@echo "  check-unit  Run 152 unit tests (parse, annotate, classify, bta, codegen)"
+	@echo "  benchmark   Run n-queen and collatz benchmarks"
+	@echo "  help        Show this message"
 
 check: check-unit
 	cd $(ROOT) && bash $(HERE)/checks/run-checks.sh
