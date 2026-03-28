@@ -1627,7 +1627,15 @@
                  (lambda (env test conseq . alt)
                    (if (seed-eval test env)
                        (seed-eval conseq env)
-                       (if (null? alt) (void) (seed-eval (car alt) env))))))))
+                       (if (null? alt) (void) (seed-eval (car alt) env))))))
+    (when . ,(cons 'operative
+                   (lambda (env test . body)
+                     (when (seed-eval test env)
+                       (for-each (lambda (e) (seed-eval e env)) body)))))
+    (unless . ,(cons 'operative
+                     (lambda (env test . body)
+                       (unless (seed-eval test env)
+                         (for-each (lambda (e) (seed-eval e env)) body)))))))
 
 ;; =========================================================================
 ;; DRIVER

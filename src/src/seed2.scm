@@ -365,6 +365,31 @@
     [(vau ,_ ,_ ,[body]) body]
     [,_ #f]))
 
+;; Does the AST contain a call to a free non-primitive variable?
+;; Such calls may target runtime operatives, making compile-time
+;; specialization unsafe (syntax args get mangled by substitution).
+(define (has-unknown-operative-calls? ast)
+  (match ast
+    [(call (var ,n free) ,args)
+     (or (not (memq n *primitives*))
+         (ormap has-unknown-operative-calls? args))]
+    [(call ,[op] (,[a] ...)) (or op (ormap values a))]
+    [(var ,_ ,_) #f]
+    [(const ,_) #f]
+    [(quot ,_) #f]
+    [(dyn-env) #f]
+    [(if ,[t] ,[c] ,[a]) (or t c a)]
+    [(begin ,[e] ...) (ormap values e)]
+    [(define ,[env-e] ,[name-e] ,[val-e]) (or env-e name-e val-e)]
+    [(eval ,[e] ,[ev]) (or e ev)]
+    [(time ,[e]) e]
+    [(let ((,_ ,[v]) ...) ,[body]) (or (ormap values v) body)]
+    [(letrec ((,_ ,[v]) ...) ,[body]) (or (ormap values v) body)]
+    [(lam ,_ ,[body]) body]
+    [(wrap ,[inner]) inner]
+    [(vau ,_ ,_ ,[body]) body]
+    [,_ #f]))
+
 ;; Collect all free variable names referenced in the AST.
 (define (collect-free-vars ast)
   (match ast
@@ -799,6 +824,37 @@
         (let ([l (free-symbols (car sexp))] [r (free-symbols (cdr sexp))])
           (append l (filter (lambda (s) (not (memq s l))) r)))])]
     [else '()]))
+
+;; Build env extension for operative dispatch: capture Chez locals
+;; that appear free in syntax-args so seed-eval can resolve them.
+(define (env-extension-for-syntax-args syntax-args ctx)
+  (let* ([src-forms (map (lambda (sa)
+                           ;; syntax-args are like '(+ 2 2) — strip the quote
+                           (if (and (pair? sa) (eq? (car sa) 'quote))
+                               (cadr sa)
+                               sa))
+                         syntax-args)]
+         [all-syms (apply append (map free-symbols src-forms))]
+         [unique (let loop ([ss all-syms] [seen '()])
+                   (cond [(null? ss) (reverse seen)]
+                         [(memq (car ss) seen) (loop (cdr ss) seen)]
+                         [else (loop (cdr ss) (cons (car ss) seen))]))]
+         ;; Keep symbols that are Chez locals: in ctx, or 'env' when in vau body
+         [chez-locals (filter (lambda (s)
+                                (and (not (memq s *primitives*))
+                                     (or (assq s ctx)
+                                         ;; 'env' is a Chez local in vau bodies
+                                         ;; but not tracked in ctx
+                                         (and (eq? s 'env) (assq '%has-env ctx)))))
+                              unique)])
+    chez-locals))
+
+;; Wrap an operative call body with env extension if needed
+(define (wrap-operative-call locals call-code)
+  (if (null? locals)
+      call-code
+      `(let ([env (list* ,@(map (lambda (s) `(cons ',s ,s)) locals) env)])
+         ,call-code)))
 
 (define (compile-eval-body body-sexp binds-ast env-ast ctx lenv ifuel)
   (let* ([all-vars (free-symbols body-sexp)]
@@ -1858,8 +1914,12 @@
      `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
 
     ;; Call to known vau → SPECIALIZE at compile time
+    ;; Skip specialization when vau body calls unknown free non-primitives
+    ;; (potential runtime operatives whose syntax args would be mangled)
     [(call (var ,name local) ,args)
-     (guard (let ([e (assq name ctx)]) (and e (vau-info? (cdr e)))))
+     (guard (let ([e (assq name ctx)])
+              (and e (vau-info? (cdr e))
+                   (not (has-unknown-operative-calls? (cadddr (cdr e)))))))
      (let* ([info (cdr (assq name ctx))]
             [vau-params (cadr info)]
             [vau-ep (caddr info)]
@@ -1871,30 +1931,46 @@
      (guard (memq name *primitives*))
      `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
 
-    ;; Call to other local (e.g., lambda parameter) → (name args...)
+    ;; Call to other local (e.g., lambda parameter) — may be operative or applicative
     [(call (var ,name local) ,args)
-     `(,name ,@(map (lambda (a) (codegen* a ctx)) args))]
+     (let* ([arg-codes (map (lambda (a) (codegen* a ctx)) args)]
+            [syntax-args (map (lambda (a) `',(ast->src* a)) args)]
+            [locals (env-extension-for-syntax-args syntax-args ctx)])
+       `(let ([proc ,name])
+          (if (and (pair? proc) (eq? (car proc) 'operative))
+              ,(wrap-operative-call locals `((cdr proc) env ,@syntax-args))
+              (proc ,@arg-codes))))]
 
-    ;; Call to other free → (name args...) or env-ref dispatch
+    ;; Call to other free — may be operative or applicative
     [(call (var ,name free) ,args)
-     (let ([arg-codes (map (lambda (a) (codegen* a ctx)) args)])
+     (let* ([arg-codes (map (lambda (a) (codegen* a ctx)) args)]
+            [syntax-args (map (lambda (a) `',(ast->src* a)) args)]
+            [locals (env-extension-for-syntax-args syntax-args ctx)])
        (if (and (not (memq name *primitives*))
                 (not (assq name ctx))
                 (assq '%has-env ctx))
-           ;; Non-primitive, not in ctx, in env context → look up from env and call
-           `((env-ref ',name env) ,@arg-codes)
-           `(,name ,@arg-codes)))]
+           ;; Non-primitive, not in ctx, in env context → look up from env
+           `(let ([proc (env-ref ',name env)])
+              (if (and (pair? proc) (eq? (car proc) 'operative))
+                  ,(wrap-operative-call locals `((cdr proc) env ,@syntax-args))
+                  (proc ,@arg-codes)))
+           `(let ([proc ,name])
+              (if (and (pair? proc) (eq? (car proc) 'operative))
+                  ,(wrap-operative-call locals `((cdr proc) env ,@syntax-args))
+                  (proc ,@arg-codes)))))]
 
     ;; Generic call — runtime dispatch
     [(call ,op ,args)
-     (let ([op-code (codegen* op ctx)]
-           [arg-codes (map (lambda (a) (codegen* a ctx)) args)]
-           [syntax-args (map (lambda (a) `',(ast->src* a)) args)])
+     (let* ([op-code (codegen* op ctx)]
+            [arg-codes (map (lambda (a) (codegen* a ctx)) args)]
+            [syntax-args (map (lambda (a) `',(ast->src* a)) args)]
+            [locals (env-extension-for-syntax-args syntax-args ctx)])
        `(let ([proc ,op-code])
           (if (and (pair? proc) (eq? (car proc) 'operative))
-              (call-with-values
-                (lambda () ((cdr proc) env ,@syntax-args))
-                (lambda (%news %result) %result))
+              ,(wrap-operative-call locals
+                 `(call-with-values
+                    (lambda () ((cdr proc) env ,@syntax-args))
+                    (lambda (%news %result) %result)))
               (proc ,@arg-codes))))]
 
     ;; --- Vau/eval support ---
@@ -2057,6 +2133,14 @@
      (guard (and (symbol? name) (not (pair? name))))
      (let ([v (seed-eval val env)])
        (values v (cons (cons name v) env)))]
+    ;; 3-arg define (define env name val) — extend target env + thread env
+    [(define ,target-env-expr ,name-expr ,val-expr)
+     (guard (symbol? name-expr))
+     (let ([target-env (seed-eval target-env-expr env)]
+           [v (seed-eval val-expr env)])
+       (set-cdr! target-env (cons (car target-env) (cdr target-env)))
+       (set-car! target-env (cons name-expr v))
+       (values v (cons (cons name-expr v) env)))]
     ;; Local define (destructuring) — extend env immutably
     [(define (,names ...) ,expr)
      (let ([vals (seed-eval expr env)])
@@ -2261,6 +2345,36 @@
                 (lambda (env . body)
                   (values '()
                     (fold-left (lambda (_ e) (seed-eval e env)) (void) body)))))
+    (when . ,(cons 'operative
+                (lambda (env test . body)
+                  (if (seed-eval test env)
+                      (let loop ([es body] [env env] [result (void)])
+                        (if (null? es) (values '() result)
+                            (call-with-values
+                              (lambda () (seed-eval-stmt (car es) env))
+                              (lambda (val new-env)
+                                (loop (cdr es) new-env val)))))
+                      (values '() (void))))))
+    (unless . ,(cons 'operative
+                  (lambda (env test . body)
+                    (if (not (seed-eval test env))
+                        (let loop ([es body] [env env] [result (void)])
+                          (if (null? es) (values '() result)
+                              (call-with-values
+                                (lambda () (seed-eval-stmt (car es) env))
+                                (lambda (val new-env)
+                                  (loop (cdr es) new-env val)))))
+                        (values '() (void))))))
+    ;; eval — maps to seed-eval for runtime vau/operative code
+    (eval . ,seed-eval)
+    ;; set! — operative, mutates the binding in the env alist
+    (set! . ,(cons 'operative
+                (lambda (env name val-expr)
+                  (let ([v (seed-eval val-expr env)]
+                        [cell (assq name env)])
+                    (if cell
+                        (begin (set-cdr! cell v) (values '() v))
+                        (error 'set! "unbound" name))))))
     ))
 
 ;; =========================================================================
