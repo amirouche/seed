@@ -37,6 +37,10 @@
     environment-lookup environment-lookup-unbox bind-parameters
     seed-evaluate-statement
 
+    ;; BTA helpers
+    compute-parameter-binding-times
+    collect-direct-eval-parameters collect-bare-variable-uses
+
     ;; Helpers
     filter-map extract-parameter-names)
 
