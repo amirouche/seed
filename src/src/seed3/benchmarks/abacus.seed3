@@ -1,0 +1,299 @@
+;;; benchmark-abacus.seed — Arithmetic Evaluator Benchmark
+;;;
+;;; Exercises match catamorphism (,[x]) to implement a recursive
+;;; arithmetic expression evaluator via pattern-directed descent.
+;;; The entire recursive evaluation is handled by the pattern matcher.
+
+;; ============================================================
+;; MATCH LIBRARY (from match.k lines 1–317)
+;; ============================================================
+
+;; ---- Helper: strip quote wrapper ----
+
+(define unwrap-quote
+  (lambda (x)
+    (if (pair? x)
+        (if (eq? (car x) 'quote)
+            (cadr x)
+            x)
+        x)))
+
+;; ---- Sentinel for match failure ----
+
+(define match-fail (cons 'match 'fail))
+
+;; ---- Extract pattern variable names ----
+
+(define extract-vars
+  (lambda (pat)
+    (if (pair? pat)
+        (if (eq? (car pat) 'unquote)
+            (let ((inner (cadr pat)))
+              (if (pair? inner)
+                  (if (eq? (car inner) '_) '() (list (car inner)))
+                  (if (eq? inner '_) '() (list inner))))
+            (append (extract-vars (car pat))
+                    (extract-vars (cdr pat))))
+        '())))
+
+;; ---- Build let-expression for eval ----
+
+(define make-let
+  (lambda (bindings body)
+    (if (null? bindings)
+        body
+        (list 'let
+              (map (lambda (b)
+                     (list (car b) (list 'quote (cdr b))))
+                   bindings)
+              body))))
+
+;; ---- Split list at position n ----
+
+(define split-at
+  (lambda (lst n)
+    (if (= n 0)
+        (cons '() lst)
+        (let ((rest (split-at (cdr lst) (- n 1))))
+          (cons (cons (car lst) (car rest))
+                (cdr rest))))))
+
+;; ---- Check if next element is ellipsis ----
+
+(define has-ellipsis-next
+  (lambda (rest)
+    (if (pair? rest)
+        (if (symbol? (car rest))
+            (eq? (car rest) '...)
+            #f)
+        #f)))
+
+;; ---- Count fixed elements after ellipsis ----
+
+(define count-fixed-elts
+  (lambda (pats)
+    (if (null? pats)
+        0
+        (if (pair? pats)
+            (if (eq? (car pats) 'unquote)
+                0
+                (+ 1 (count-fixed-elts (cdr pats))))
+            0))))
+
+;; ---- Ellipsis accumulator helpers ----
+
+(define add-to-accum
+  (lambda (accum binds)
+    (map (lambda (a)
+           (let ((found (assq (car a) binds)))
+             (if found
+                 (cons (car a) (cons (cdr found) (cdr a)))
+                 a)))
+         accum)))
+
+(define match-each
+  (lambda (sub-pat vals var-names loop-fn)
+    (letrec
+        ((collect
+          (lambda (remaining accum)
+            (if (null? remaining)
+                (map (lambda (a) (cons (car a) (reverse (cdr a))))
+                     accum)
+                (let ((binds (pmatch sub-pat (car remaining) loop-fn '())))
+                  (if binds
+                      (collect (cdr remaining)
+                               (add-to-accum accum binds))
+                      #f))))))
+      (collect vals (map (lambda (v) (list v)) var-names)))))
+
+;; ---- Ellipsis pattern handler ----
+
+(define pmatch-ellipsis
+  (lambda (sub-pat rest-pats val loop-fn acc)
+    (let ((rest-count (count-fixed-elts rest-pats)))
+      (let ((val-len (length val)))
+        (if (< val-len rest-count)
+            #f
+            (let ((sp (split-at val (- val-len rest-count))))
+              (let ((ellipsis-vals (car sp))
+                    (rest-vals (cdr sp)))
+                (let ((var-names (extract-vars sub-pat)))
+                  (let ((ell-binds (match-each sub-pat ellipsis-vals var-names loop-fn)))
+                    (if ell-binds
+                        (pmatch-elts rest-pats rest-vals loop-fn
+                                     (append ell-binds acc))
+                        #f))))))))))
+
+;; ---- Core pattern matcher ----
+
+(define pmatch
+  (lambda (pat val loop-fn acc)
+    (if (pair? pat)
+        (if (eq? (car pat) 'unquote)
+            (let ((inner (cadr pat)))
+              (if (pair? inner)
+                  (let ((name (car inner)))
+                    (if (eq? name '_)
+                        acc
+                        (cons (cons name (loop-fn val)) acc)))
+                  (if (eq? inner '_)
+                      acc
+                      (cons (cons inner val) acc))))
+            (pmatch-elts pat val loop-fn acc))
+        (if (null? pat)
+            (if (null? val) acc #f)
+            (if (equal? pat val) acc #f)))))
+
+;; ---- List/pair element matcher ----
+
+(define pmatch-elts
+  (lambda (pat-list val loop-fn acc)
+    (if (null? pat-list)
+        (if (null? val) acc #f)
+        (if (pair? pat-list)
+            (if (eq? (car pat-list) 'unquote)
+                (pmatch pat-list val loop-fn acc)
+                (if (has-ellipsis-next (cdr pat-list))
+                    (pmatch-ellipsis (car pat-list) (cddr pat-list) val loop-fn acc)
+                    (if (pair? val)
+                        (let ((acc* (pmatch (car pat-list) (car val) loop-fn acc)))
+                          (if acc*
+                              (pmatch-elts (cdr pat-list) (cdr val) loop-fn acc*)
+                              #f))
+                        #f)))
+            (if (equal? pat-list val) acc #f)))))
+
+;; ---- Clause parser ----
+
+(define parse-clause
+  (lambda (clause)
+    (let ((pat (car clause))
+          (rest (cdr clause)))
+      (if (pair? rest)
+          (if (pair? (car rest))
+              (if (eq? (car (car rest)) 'guard)
+                  (list pat (cadr (car rest)) (cadr rest))
+                  (list pat #f (car rest)))
+              (list pat #f (car rest)))
+          (error 'match "clause missing body" clause)))))
+
+;; ---- The match operative ----
+
+(define match
+  (vau (expr clauses) env
+    (letrec
+        ((loop
+          (lambda (val)
+            (try-clauses val (unwrap-quote clauses))))
+         (try-clauses
+          (lambda (val cls)
+            (if (null? cls)
+                (error 'match "no matching clause" val)
+                (let ((result (try-one val (car cls))))
+                  (if (eq? result match-fail)
+                      (try-clauses val (cdr cls))
+                      result)))))
+         (try-one
+          (lambda (val clause)
+            (let ((parsed (parse-clause clause)))
+              (let ((pat (car parsed))
+                    (guard-expr (cadr parsed))
+                    (body (cadr (cdr parsed))))
+                (let ((binds (pmatch pat val loop '())))
+                  (if binds
+                      (if guard-expr
+                          (if (eval (make-let binds guard-expr) env)
+                              (eval (make-let binds body) env)
+                              match-fail)
+                          (eval (make-let binds body) env))
+                      match-fail)))))))
+      (loop (eval expr env)))))
+
+;; ============================================================
+;; ARITHMETIC EVALUATOR (catamorphism-based)
+;; ============================================================
+;; ,[a] recursively evaluates sub-expressions via match's loop.
+;; The entire recursive descent is driven by the pattern matcher.
+
+(define eval-expr
+  (lambda (expr)
+    (match expr '(
+      ((+ (unquote (a)) (unquote (b)))  (+ a b))
+      ((- (unquote (a)) (unquote (b)))  (- a b))
+      ((* (unquote (a)) (unquote (b)))  (* a b))
+      ((/ (unquote (a)) (unquote (b)))  (quotient a b))
+      ((unquote n) (guard (number? n))  n)))))
+
+;; ============================================================
+;; TREE GENERATORS
+;; ============================================================
+
+;; Build right-leaning (+ 1 (+ 2 (+ 3 ... (+ (n-1) n)...)))
+(define make-sum-tree
+  (lambda (n)
+    (letrec ((build
+              (lambda (i)
+                (if (= i n)
+                    n
+                    (list '+ i (build (+ i 1)))))))
+      (build 1))))
+
+;; Build balanced binary tree of depth d
+;; Each leaf is 1, internal nodes are (+).
+;; Result: 2^d leaves, each = 1, so total = 2^d.
+(define make-balanced-tree
+  (lambda (d)
+    (if (= d 0)
+        1
+        (list '+ (make-balanced-tree (- d 1))
+                  (make-balanced-tree (- d 1))))))
+
+
+;; ============================================================
+;; BENCHMARK
+;; ============================================================
+
+(display "Arithmetic Evaluator Benchmark (exercises match catamorphism)")
+(newline)
+(newline)
+
+;; --- Correctness tests ---
+
+(display "Simple:  (+ 1 2) = ")
+(display (eval-expr '(+ 1 2)))
+(newline)
+
+(display "Nested:  (* (+ 3 4) (- 10 2)) = ")
+(display (eval-expr '(* (+ 3 4) (- 10 2))))
+(newline)
+
+(display "Division: (/ (* 100 (+ 2 3)) (- 20 10)) = ")
+(display (eval-expr '(/ (* 100 (+ 2 3)) (- 20 10))))
+(newline)
+
+;; --- Deep right-leaning: sum 1..100 ---
+
+(let ((sum100 (make-sum-tree 100)))
+  (let ((result (eval-expr sum100)))
+    (display "Sum 1..100 (depth 99): ")
+    (display result)
+    (newline)))
+
+;; --- Balanced trees ---
+
+(let ((bal10 (make-balanced-tree 10)))
+  (let ((result (eval-expr bal10)))
+    (display "Balanced tree depth 10 (1024 leaves): ")
+    (display result)
+    (newline)))
+
+(define abacus-depth
+  (let ((env-val (getenv "SEED_ABACUS_DEPTH")))
+    (if env-val (string->number env-val) 29)))
+(let ((tree (time (make-balanced-tree abacus-depth))))
+  (display "Balanced tree depth ")
+  (display abacus-depth)
+  (display ": ")
+  (let ((result (time (eval-expr tree))))
+    (display result)
+    (newline)))
