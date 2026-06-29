@@ -74,8 +74,9 @@ fi
 
 # Parse --drivers option
 if [ "$DRIVERS" = "all" ]; then
-  # Default drivers: seedink (Seed1), seedink2 (Seed2), and scheme (native Chez)
-  SELECTED_DRIVERS=(seedink seedink2 scheme)
+  # Default drivers: seedink (Seed1), seedink2 (Seed2), seedink3 (Seed3),
+  # and scheme (native Chez)
+  SELECTED_DRIVERS=(seedink seedink2 seedink3 scheme)
 else
   IFS=',' read -ra SELECTED_DRIVERS <<< "$DRIVERS"
 fi
