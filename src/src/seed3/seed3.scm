@@ -857,10 +857,25 @@
       `(let ([env (list* ,@(map (lambda (s) `(cons ',s ,s)) locals) env)])
          ,call-code)))
 
+;; Is NAME a host (Chez) top-level binding?  Used to resolve free variables in
+;; an eval'd body directly to the host global (native speed) instead of walking
+;; the runtime environment alist on every node.  This replaces seed/seed2's
+;; hardcoded *primitives* list with host introspection, so no list is baked in.
+(define (host-global? name)
+  (top-level-bound? name))
+
 ;; Compile an eval'd body expression inline instead of falling back to
 ;; seed-evaluate. Takes the body S-expression and a bindings AST (the alist
-;; of pattern bindings from pmatch). Generates code that looks up bindings
-;; via (cdr (assq 'sym binds)), which alist fusion then eliminates.
+;; of pattern bindings from pmatch). Resolves each free variable to one of:
+;;   - a Chez local already in context           -> bare reference
+;;   - a host global (apply, +, quotient, ...)   -> bare reference (native)
+;;   - a pattern variable / dynamic global       -> safe lookup:
+;;        (let ((%b (assq 'sym binds)))
+;;          (if %b (cdr %b) (eval 'sym env)))
+;; The safe lookup tries the pmatch binds alist first (pattern vars; alist
+;; fusion collapses this to a direct local), and falls back to env lookup for
+;; genuinely dynamic globals.  Host globals skip binds entirely — that is what
+;; closes the per-node env-walk perf gap on multi-operand ellipsis bodies.
 (define (compile-eval-body body-sexp binds-ast env-ast context
                            lambda-environment inline-fuel)
   (let* ([all-vars (extract-free-symbols body-sexp)]
@@ -873,13 +888,22 @@
          ;; that are still referenced.
          [body-free (ast-collect-free-variables body-ast)]
          [live-vars (filter (lambda (v) (memq v body-free)) all-vars)]
-         ;; Variables already in context are Chez locals from the enclosing
-         ;; scope — reference them directly. Only generate assq lookups for rest.
-         [need-lookup (filter (lambda (v) (not (assq v context))) live-vars)]
+         ;; Variables already in context (Chez locals) and host globals both
+         ;; resolve directly as bare references — no binds lookup needed.
+         ;; Only pattern vars / dynamic globals need the safe lookup.
+         [need-lookup (filter (lambda (v)
+                                (not (or (assq v context) (host-global? v))))
+                              live-vars)]
+         ;; For each remaining variable: try assq from binds (pattern vars),
+         ;; fall back to env lookup (dynamic globals).  Each %b is scoped to its
+         ;; own inner let so the name can be reused safely.
          [let-binds (map (lambda (v)
-                           (list v `(call (var cdr free)
-                                     ((call (var assq free)
-                                        ((quot ,v) ,binds-ast))))))
+                           (list v
+                                 `(let ([%b (call (var assq free)
+                                              ((quot ,v) ,binds-ast))])
+                                    (if (var %b local)
+                                        (call (var cdr free) ((var %b local)))
+                                        (eval (quot ,v) ,env-ast)))))
                          need-lookup)])
     (if (null? let-binds) body-ast `(let ,let-binds ,body-ast))))
 
@@ -1368,6 +1392,13 @@
     [(call (var cdr free) ((call (var assq free) ((quot ,symbol) (var ,bound-name local)))))
      (guard (eq? bound-name binds-name))
      (list symbol)]
+    ;; Safe-lookup shape from compile-eval-body:
+    ;;   (let ((%b (assq 'SYM binds))) (if %b (cdr %b) FALLBACK))
+    ;; When fusion fires, SYM is a guaranteed pattern binding (same as above).
+    [(let ((,_b (call (var assq free) ((quot ,symbol) (var ,bound-name local)))))
+       (if (var ,_b2 local) (call (var cdr free) ((var ,_b3 local))) ,_fallback))
+     (guard (eq? bound-name binds-name))
+     (list symbol)]
     [(let ((,_ ,values) ...) ,body)
      (append (apply append (map (lambda (v) (collect-assq-symbols v binds-name)) values))
              (collect-assq-symbols body binds-name))]
@@ -1387,6 +1418,14 @@
 (define (replace-assq-references ast binds-name)
   (match ast
     [(call (var cdr free) ((call (var assq free) ((quot ,symbol) (var ,bound-name local)))))
+     (guard (eq? bound-name binds-name))
+     `(var ,symbol local)]
+    ;; Safe-lookup shape from compile-eval-body:
+    ;;   (let ((%b (assq 'SYM binds))) (if %b (cdr %b) FALLBACK))
+    ;; When fusion fires SYM is guaranteed present, so the env fallback is
+    ;; dead — collapse to (var SYM local) just like the plain shape.
+    [(let ((,_b (call (var assq free) ((quot ,symbol) (var ,bound-name local)))))
+       (if (var ,_b2 local) (call (var cdr free) ((var ,_b3 local))) ,_fallback))
      (guard (eq? bound-name binds-name))
      `(var ,symbol local)]
     [(let ((,names ,values) ...) ,body)
