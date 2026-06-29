@@ -13,7 +13,7 @@
 #   --gremlin-e=N          Gremlin edges per vertex          (default: 20)
 #   --iters=N              Repetitions per benchmark        (default: 1)
 #   --only=BENCH           Run only: nqueens, collatz, abacus, abacus2, gremlin, gremlin-pipeline, or all (default: all)
-#   --drivers=LIST         Drivers to run: all, seedink, seedink2, scheme, binink, binink-aot,
+#   --drivers=LIST         Drivers to run: all, seedink, seedink2, seedink3, scheme, binink, binink-aot,
 #                          or comma-separated (default: all)
 #   --dev                  Enable dev mode (optimize-level 0, GC, profiling)
 #   --verbose              Show compilation messages (default: quiet)
@@ -82,10 +82,10 @@ fi
 
 # Validate selected drivers
 for driver in "${SELECTED_DRIVERS[@]}"; do
-  if [[ "$driver" != "seedink" && "$driver" != "seedink2" && "$driver" != "scheme" && \
-        "$driver" != "binink" && "$driver" != "binink-aot" ]]; then
+  if [[ "$driver" != "seedink" && "$driver" != "seedink2" && "$driver" != "seedink3" && \
+        "$driver" != "scheme" && "$driver" != "binink" && "$driver" != "binink-aot" ]]; then
     echo "Error: Unknown driver '$driver'" >&2
-    echo "Supported drivers: seedink, seedink2, scheme, binink, binink-aot" >&2
+    echo "Supported drivers: seedink, seedink2, seedink3, scheme, binink, binink-aot" >&2
     exit 1
   fi
 done
@@ -116,9 +116,11 @@ run_bench() {
 
   for (( i=1; i<=iters; i++ )); do
     local stderr_file="$TMP/stderr.$i"
-    if [ "$driver" = "seedink" ] || [ "$driver" = "seedink2" ]; then
+    if [ "$driver" = "seedink" ] || [ "$driver" = "seedink2" ] || [ "$driver" = "seedink3" ]; then
       local wall_start wall_end wall_secs stdout_file script
-      if [ "$driver" = "seedink2" ]; then script="seedink2.scm"; else script="seedink.scm"; fi
+      if [ "$driver" = "seedink2" ]; then script="seedink2.scm"
+      elif [ "$driver" = "seedink3" ]; then script="seedink3.scm"
+      else script="seedink.scm"; fi
       stdout_file="$TMP/stdout.$i"
       wall_start=$(date +%s%N)
       scheme --script "$script" "$file" >"$stdout_file" 2>&1
@@ -204,7 +206,7 @@ run_bench() {
 
   # Output structured result
   local display_label="${label#*|}"
-  if [ "$driver" = "seedink" ] || [ "$driver" = "seedink2" ] || [ "$driver" = "binink-aot" ]; then
+  if [ "$driver" = "seedink" ] || [ "$driver" = "seedink2" ] || [ "$driver" = "seedink3" ] || [ "$driver" = "binink-aot" ]; then
     printf "  %-42s  compile: %8ss  execute: %8ss  wall: %8ss" "$display_label" "$compile_best" "$best" "$wall_best"
     if [ "$iters" -gt 1 ]; then
       printf "  (best of %d)" "$iters"
@@ -313,6 +315,8 @@ if [ "$ONLY" = "all" ] || [ "$ONLY" = "nqueens" ]; then
       run_bench "N-Queens|scheme --script seedink.scm n-queen.seed" seedink "benchmarks/n-queen/n-queen.seed" "$ITERS"
     elif [ "$driver" = "seedink2" ]; then
       run_bench "N-Queens|scheme --script seedink2.scm n-queen.seed" seedink2 "benchmarks/n-queen/n-queen.seed" "$ITERS"
+    elif [ "$driver" = "seedink3" ]; then
+      run_bench "N-Queens|scheme --script seedink3.scm n-queen.seed" seedink3 "benchmarks/n-queen/n-queen.seed" "$ITERS"
     elif [ "$driver" = "binink" ]; then
       run_bench "N-Queens|binink exec n-queen.binink.scm" binink "benchmarks/n-queen/n-queen.scm" "$ITERS"
     elif [ "$driver" = "binink-aot" ]; then
@@ -331,6 +335,8 @@ if [ "$ONLY" = "all" ] || [ "$ONLY" = "collatz" ]; then
       run_bench "Collatz|scheme --script seedink.scm collatz.seed" seedink "benchmarks/collatz/collatz.seed" "$ITERS"
     elif [ "$driver" = "seedink2" ]; then
       run_bench "Collatz|scheme --script seedink2.scm collatz.seed" seedink2 "benchmarks/collatz/collatz.seed" "$ITERS"
+    elif [ "$driver" = "seedink3" ]; then
+      run_bench "Collatz|scheme --script seedink3.scm collatz.seed" seedink3 "benchmarks/collatz/collatz.seed" "$ITERS"
     elif [ "$driver" = "binink" ]; then
       run_bench "Collatz|binink exec collatz.binink.scm" binink "benchmarks/collatz/collatz.scm" "$ITERS"
     elif [ "$driver" = "binink-aot" ]; then
@@ -391,6 +397,28 @@ if [ "$ONLY" = "all" ] || [ "$ONLY" = "abacus" ]; then
   [ "$ITERS" -gt 1 ] && printf "  (best of %d)" "$ITERS"
   printf "\n"
   printf "%s\t%s\t%s\t%s\t%s\n" "Abacus|scheme --script seedink2.scm abacus.seed" "seedink2" "$seed_compile" "$seed_best" "$seed_wall" >> "$TMP/results.csv"
+
+    elif [ "$driver" = "seedink3" ]; then
+  # Seed3 — same as seedink2 but uses seedink3.scm
+  seed_best="" seed_compile="" seed_tree="" seed_eval="" seed_wall=""
+  for (( i=1; i<=ITERS; i++ )); do
+    wall_start=$(date +%s%N)
+    scheme $SCHEME_OPTS --script seedink3.scm benchmarks/abacus/abacus.seed >"$TMP/ab-out.$i" 2>&1
+    wall_end=$(date +%s%N)
+    wall_secs=$(awk "BEGIN{printf \"%.3f\", ($wall_end - $wall_start) / 1000000000}")
+    times_arr=($(sed -n 's/^[[:space:]]*\([0-9.]*\)s elapsed real time.*/\1/p' "$TMP/ab-out.$i" | head -2))
+    seed_tree="${times_arr[0]:-0}"
+    seed_eval="${times_arr[1]:-0}"
+    et=$(awk "BEGIN{printf \"%.6f\", $seed_tree + $seed_eval}")
+    if [ -z "$seed_best" ] || awk "BEGIN{exit !($et < $seed_best)}"; then
+      seed_best="$et"; seed_compile="n/a"; seed_wall="$wall_secs"
+    fi
+  done
+  printf "  %-42s  compile: %8ss  tree: %8ss  eval: %8ss  wall: %8ss" \
+         "scheme --script seedink3.scm abacus.seed" "$seed_compile" "$seed_tree" "$seed_eval" "$seed_wall"
+  [ "$ITERS" -gt 1 ] && printf "  (best of %d)" "$ITERS"
+  printf "\n"
+  printf "%s\t%s\t%s\t%s\t%s\n" "Abacus|scheme --script seedink3.scm abacus.seed" "seedink3" "$seed_compile" "$seed_best" "$seed_wall" >> "$TMP/results.csv"
 
     elif [ "$driver" = "binink" ]; then
   # binink exec — parse tree/eval from stdout
@@ -541,6 +569,28 @@ if [ "$ONLY" = "all" ] || [ "$ONLY" = "abacus2" ]; then
   [ "$ITERS" -gt 1 ] && printf "  (best of %d)" "$ITERS"
   printf "\n"
   printf "%s\t%s\t%s\t%s\t%s\n" "Abacus2|scheme --script seedink2.scm abacus2.seed" "seedink2" "$seed_compile" "$seed_best" "$seed_wall" >> "$TMP/results.csv"
+
+    elif [ "$driver" = "seedink3" ]; then
+  # Seed3 — same as seedink2 but uses seedink3.scm
+  seed_best="" seed_compile="" seed_tree="" seed_eval="" seed_wall=""
+  for (( i=1; i<=ITERS; i++ )); do
+    wall_start=$(date +%s%N)
+    scheme $SCHEME_OPTS --script seedink3.scm benchmarks/abacus2/abacus2.seed >"$TMP/ab2-out.$i" 2>&1
+    wall_end=$(date +%s%N)
+    wall_secs=$(awk "BEGIN{printf \"%.3f\", ($wall_end - $wall_start) / 1000000000}")
+    times_arr=($(sed -n 's/^[[:space:]]*\([0-9.]*\)s elapsed real time.*/\1/p' "$TMP/ab2-out.$i" | head -2))
+    seed_tree="${times_arr[0]:-0}"
+    seed_eval="${times_arr[1]:-0}"
+    et=$(awk "BEGIN{printf \"%.6f\", $seed_tree + $seed_eval}")
+    if [ -z "$seed_best" ] || awk "BEGIN{exit !($et < $seed_best)}"; then
+      seed_best="$et"; seed_compile="n/a"; seed_wall="$wall_secs"
+    fi
+  done
+  printf "  %-42s  compile: %8ss  tree: %8ss  eval: %8ss  wall: %8ss" \
+         "scheme --script seedink3.scm abacus2.seed" "$seed_compile" "$seed_tree" "$seed_eval" "$seed_wall"
+  [ "$ITERS" -gt 1 ] && printf "  (best of %d)" "$ITERS"
+  printf "\n"
+  printf "%s\t%s\t%s\t%s\t%s\n" "Abacus2|scheme --script seedink3.scm abacus2.seed" "seedink3" "$seed_compile" "$seed_best" "$seed_wall" >> "$TMP/results.csv"
 
     elif [ "$driver" = "binink" ]; then
   # binink exec — parse tree/eval from stdout
