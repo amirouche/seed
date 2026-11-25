@@ -96,7 +96,7 @@ vau does not require learning a new DSL, the pattern matching domain specific la
     (if (null? args) #f
       (let ((v (eval (car args) env)))
         (if v v
-          (eval (cons myor (cdr args)) env))))))
+          (eval (cons 'myor (cdr args)) env))))))
 
 ;;; -------------------------------------------------------
 ;;; Usage — identical in all three:
